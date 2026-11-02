@@ -3,6 +3,7 @@ import { api } from './api';
 
 type Profile = { id: number; name: string; avatar: string; hasPin: boolean; role: 'member' | 'admin' };
 type AdminProfile = Profile & { itemCount: number; createdAt?: string };
+type Notice = { id: number; itemTitle: string; deletedBy: string; createdAt: string };
 type Alternative = { id: number; url: string | null; title: string | null; price: number | null; imagePath: string | null; note: string | null };
 type Item = {
   id: number; profileId: number; title: string; url: string | null; imagePath: string | null;
@@ -72,16 +73,27 @@ function Picker({ onLogin }: { onLogin: (p: Profile) => void }) {
 
 function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Profile) => void; onLogout: () => void }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [notices, setNotices] = useState<Notice[]>([]);
   const [viewingId, setViewingId] = useState(me.id);
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Item | null | false>(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [reload, setReload] = useState(0);
   const ownList = viewingId === me.id;
   const viewing = profiles.find(p => p.id === viewingId) ?? me;
   useEffect(() => { api<Profile[]>('/profiles').then(setProfiles).catch(() => setError('No pudimos cargar los perfiles')); }, []);
+  useEffect(() => {
+    let live = true;
+    const loadNotices = () => api<Notice[]>('/notifications').then(data => { if (live) setNotices(data); }).catch(() => {});
+    loadNotices();
+    const interval = window.setInterval(loadNotices, 30000);
+    window.addEventListener('focus', loadNotices);
+    return () => { live = false; window.clearInterval(interval); window.removeEventListener('focus', loadNotices); };
+  }, []);
   useEffect(() => {
     let live = true;
     setBusy(true); setError('');
@@ -89,6 +101,11 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     api<Item[]>(route).then(data => { if (live) setItems(data); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
   }, [ownList, viewingId, reload]);
+  useEffect(() => {
+    setSelectionMode(false);
+    setSelectedIds([]);
+  }, [viewingId]);
+  useEffect(() => setSelectedIds(ids => ids.filter(id => items.some(item => item.id === id))), [items]);
   const refresh = () => setReload(n => n + 1);
   const removeItem = async (item: Item) => {
     if (!window.confirm(`¿Borrar «${item.title}»?`)) return;
@@ -100,27 +117,48 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
   const cancelClaim = async (item: Item) => {
     try { await api(`/items/${item.id}/claim`, undefined, 'DELETE'); refresh(); } catch (e) { setError(errorText(e)); }
   };
-  const clearList = async () => {
-    if (!window.confirm(`¿Vaciar tu lista completa? Se eliminarán ${items.length} deseos y sus reservas.`)) return;
-    try { await api('/items/mine', undefined, 'DELETE'); refresh(); }
-    catch (e) { setError(errorText(e)); }
+  const dismissNotice = async (notice: Notice) => {
+    try {
+      await api(`/notifications/${notice.id}`, undefined, 'DELETE');
+      setNotices(current => current.filter(entry => entry.id !== notice.id));
+    } catch (e) { setError(errorText(e)); }
+  };
+  const toggleSelected = (itemId: number) => setSelectedIds(ids => ids.includes(itemId) ? ids.filter(id => id !== itemId) : [...ids, itemId]);
+  const deleteSelected = async () => {
+    if (!selectedIds.length) return;
+    if (!window.confirm(`¿Borrar los ${selectedIds.length} deseos seleccionados? Esta acción no se puede deshacer.`)) return;
+    setError('');
+    try {
+      await api('/items/mine/delete-selected', { itemIds: selectedIds });
+      setSelectedIds([]); setSelectionMode(false); refresh();
+    } catch (e) { setError(errorText(e)); }
   };
   return <Shell>
     <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
       <div><p className="text-sm opacity-70">Regalos</p><h1 className="text-3xl font-bold tracking-tight">{me.avatar} {me.name}{me.role === 'admin' && <span className="ml-2 rounded-full bg-moss px-2 py-1 align-middle text-xs">Admin</span>}</h1></div>
       <div className="flex gap-2"><button className={`${btn} bg-moss`} onClick={() => setSettingsOpen(true)}>Ajustes</button><button className={`${btn} bg-moss`} onClick={onLogout}>Cambiar de perfil</button></div>
     </header>
+    {notices.length > 0 && <section aria-label="Avisos" className="mb-6 space-y-2">{notices.map(notice => <div key={notice.id} role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-700/20 bg-amber-100 p-4 text-amber-950"><p>{notice.deletedBy} ha eliminado «{notice.itemTitle}» de su lista.</p><button className={`${btn} bg-paper`} onClick={() => dismissNotice(notice)}>Descartar</button></div>)}</section>}
     <nav aria-label="Listas" className="mb-7 flex gap-2 overflow-x-auto pb-2">
       <button onClick={() => setViewingId(me.id)} aria-pressed={ownList} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${ownList ? 'bg-ink text-white' : 'bg-moss'}`}>Mi lista</button>
       {profiles.filter(p => p.id !== me.id).map(p => <button key={p.id} onClick={() => setViewingId(p.id)} aria-pressed={viewingId === p.id} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${viewingId === p.id ? 'bg-ink text-white' : 'bg-moss'}`}>{p.avatar} {p.name}</button>)}
     </nav>
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
-      {ownList && <div className="flex flex-wrap gap-2"><button className={`${btn} bg-moss`} onClick={clearList} disabled={!items.length}>Vaciar lista</button><button className={primary} onClick={() => setEditing(null)}>＋ Añadir deseo</button></div>}
+      {ownList && <div className="flex flex-wrap gap-2">
+        {selectionMode ? <>
+          <button className={`${btn} bg-moss`} onClick={() => { setSelectionMode(false); setSelectedIds([]); }}>Cancelar</button>
+          <button className={`${btn} bg-moss`} onClick={() => setSelectedIds(selectedIds.length === items.length ? [] : items.map(item => item.id))}>{selectedIds.length === items.length ? 'Quitar selección' : 'Seleccionar todo'}</button>
+          <button type="button" className={`${btn} bg-ribbon text-white`} onClick={deleteSelected} disabled={!selectedIds.length} aria-label={`Borrar ${selectedIds.length} deseos seleccionados`} title={`Borrar ${selectedIds.length} seleccionados`}>🗑️{selectedIds.length > 0 && <span className="ml-2">{selectedIds.length}</span>}</button>
+        </> : <>
+          <button className={`${btn} bg-moss`} onClick={() => setSelectionMode(true)} disabled={!items.length}>Seleccionar</button>
+          <button className={primary} onClick={() => setEditing(null)}>＋ Añadir deseo</button>
+        </>}
+      </div>}
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando deseos…</p> : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
       <div className="grid gap-4 sm:grid-cols-2">{items.map(item => <article key={item.id} className="overflow-hidden rounded-2xl bg-moss">
-        <ItemCard item={item} ownList={ownList} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
+        <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
       </article>)}</div>}
     {editing !== false && <ItemEditor item={editing} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />}
     {settingsOpen && <SettingsDialog me={me} onClose={() => setSettingsOpen(false)} onMeUpdated={onMeUpdated} onProfilesChanged={() => api<Profile[]>('/profiles').then(setProfiles)} />}
@@ -207,8 +245,9 @@ function AdminProfileRow({ profile, self, onSave, onDelete }: {
   </form>;
 }
 
-function ItemCard({ item, ownList, me, onEdit, onDelete, onClaim, onCancelClaim, onRefresh }: {
-  item: Item; ownList: boolean; me: Profile; onEdit: () => void; onDelete: () => void; onClaim: () => void; onCancelClaim: () => void; onRefresh: () => void;
+function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me, onEdit, onDelete, onClaim, onCancelClaim, onRefresh }: {
+  item: Item; ownList: boolean; selectionMode: boolean; selected: boolean; onToggleSelected: () => void; me: Profile;
+  onEdit: () => void; onDelete: () => void; onClaim: () => void; onCancelClaim: () => void; onRefresh: () => void;
 }) {
   const [altOpen, setAltOpen] = useState(false);
   const [altUrl, setAltUrl] = useState('');
@@ -233,8 +272,9 @@ function ItemCard({ item, ownList, me, onEdit, onDelete, onClaim, onCancelClaim,
     try { await api(`/alternatives/${alt.id}`, undefined, 'DELETE'); onRefresh(); } catch (e) { setLocalError(errorText(e)); }
   };
   return <>
+    {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
     {item.imagePath && <img src={item.imagePath} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" />}
-    <div className="p-5">
+    <div className={`p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
       <div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <p className="mt-1 text-sm opacity-70">{item.category}</p>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
       </div>
@@ -242,7 +282,7 @@ function ItemCard({ item, ownList, me, onEdit, onDelete, onClaim, onCancelClaim,
       {item.notes && <p className="mt-3 whitespace-pre-wrap">{item.notes}</p>}
       {item.url && <a className="mt-3 inline-block font-semibold underline decoration-ribbon underline-offset-4" href={item.url} target="_blank" rel="noreferrer">Ver enlace ↗</a>}
       {item.alternatives.length > 0 && <div className="mt-4 border-t border-ink/15 pt-3"><p className="mb-2 font-semibold">También me valen</p><ul className="space-y-2">{item.alternatives.map(alt => <li key={alt.id} className="flex items-start justify-between gap-2 text-sm"><div>{alt.url ? <a className="underline" href={alt.url} target="_blank" rel="noreferrer">{alt.title || alt.url}</a> : <span>{alt.title}</span>}{alt.price != null && <span className="ml-2 font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(alt.price)}</span>}{alt.note && <p className="opacity-70">{alt.note}</p>}</div>{ownList && <div className="flex gap-2"><button className="text-ink underline" onClick={() => { setEditingAlt(alt); setAltUrl(alt.url ?? ''); setAltTitle(alt.title ?? ''); setAltPrice(alt.price == null ? '' : String(alt.price)); setAltNote(alt.note ?? ''); setAltOpen(true); }}>Editar</button><button className="text-ribbon" onClick={() => removeAlternative(alt)} aria-label={`Quitar ${alt.title || 'alternativa'}`}>×</button></div>}</li>)}</ul></div>}
-      {ownList ? <div className="mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
+      {ownList ? !selectionMode && <div className="mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
         {item.reservedBy ? myClaim ? <button className={`${btn} bg-moss`} onClick={onCancelClaim}>Quitar mi reserva</button> : null : <button className={primary} onClick={onClaim}>Lo compro</button>}</div>}
       {altOpen && <form onSubmit={addAlternative} className="mt-4 space-y-2 rounded-xl bg-paper p-3"><p className="font-semibold">{editingAlt ? 'Editar alternativa' : 'Añadir alternativa'}</p><input className={input} placeholder="Enlace" type="url" value={altUrl} onChange={e => setAltUrl(e.target.value)} /><input className={input} placeholder="Nombre (opcional)" value={altTitle} onChange={e => setAltTitle(e.target.value)} /><input className={input} placeholder="Precio (opcional)" type="number" min="0" step="0.01" value={altPrice} onChange={e => setAltPrice(e.target.value)} /><input className={input} placeholder="Nota (opcional)" value={altNote} onChange={e => setAltNote(e.target.value)} />{localError && <p role="alert" className="text-sm text-ribbon">{localError}</p>}<button className={`${btn} bg-ink text-white`}>{editingAlt ? 'Guardar cambios' : 'Guardar alternativa'}</button></form>}
       {localError && !altOpen && <p role="alert" className="mt-2 text-sm text-ribbon">{localError}</p>}
@@ -257,6 +297,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   } : blankDraft());
   const [scraping, setScraping] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [imageUrl, setImageUrl] = useState('');
+  const [importingImage, setImportingImage] = useState(false);
   const [error, setError] = useState('');
   const [scrapeNotice, setScrapeNotice] = useState('');
   const set = (key: keyof ItemDraft, value: string | number) => setDraft(d => ({ ...d, [key]: value }));
@@ -268,6 +310,16 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       setScrapeNotice(meta.scrapeWarning || '');
     } catch (e) { setError(errorText(e)); }
     finally { setScraping(false); }
+  };
+  const importImage = async () => {
+    setError(''); setImportingImage(true);
+    try {
+      const result = await api<{ imagePath: string }>('/images/import', { url: imageUrl });
+      set('imagePath', result.imagePath);
+      setImageUrl('');
+      setScrapeNotice('Miniatura importada.');
+    } catch (e) { setError(errorText(e)); }
+    finally { setImportingImage(false); }
   };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError('');
@@ -282,6 +334,11 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       {!item && <div className="mb-4 flex gap-2"><input className={input} type="url" placeholder="Pega el enlace del producto" value={draft.url} onChange={e => set('url', e.target.value)} /><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Buscar'}</button></div>}
       {scrapeNotice && <p role="status" className="mb-4 rounded-xl border border-amber-700/20 bg-amber-100 p-3 text-sm text-amber-950">{scrapeNotice}</p>}
       {draft.imagePath && <img src={draft.imagePath} alt="Vista previa del producto" className="mb-4 h-40 w-full rounded-xl bg-white object-contain p-2" />}
+      <div className="mb-4 space-y-2">
+        <label className="block space-y-1"><span className="font-semibold">Miniatura (opcional)</span><input className={input} type="url" placeholder="Pega la URL directa de una imagen" value={imageUrl} onChange={e => setImageUrl(e.target.value)} /></label>
+        <p className="text-sm opacity-70">Pega el enlace directo de la imagen; si copias el HTML, usa el valor de <code>src</code>.</p>
+        <button type="button" className={`${btn} bg-moss`} disabled={!imageUrl.trim() || importingImage} onClick={importImage}>{importingImage ? 'Importando…' : 'Importar imagen'}</button>
+      </div>
       <form onSubmit={save} className="space-y-3">
         <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
         {item && <div className="flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}

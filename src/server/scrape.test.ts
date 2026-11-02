@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
-import { amazonImageFallbackUrls, leroyProductFallback, normalizeProductUrl, parseIframelyPreview, parseProductHtml, safeGet, verifiedImageType } from './scrape.js';
+import { amazonImageFallbackUrls, importImageFromUrl, leroyProductFallback, normalizeProductUrl, parseIframelyPreview, parseProductHtml, safeGet, verifiedImageType } from './scrape.js';
 
 test('normalizes pasted retailer links without a scheme while rejecting non-web protocols', () => {
   assert.equal(normalizeProductUrl('  lidl.es/p/parkside/p100411299  ').toString(), 'https://lidl.es/p/parkside/p100411299');
@@ -45,6 +48,21 @@ test('accepts generic octet-stream image responses only when their bytes are a s
   assert.equal(verifiedImageType('binary/octet-stream', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), 'image/png');
   assert.equal(verifiedImageType('application/octet-stream', Buffer.from('<html>blocked</html>')), null);
   assert.equal(verifiedImageType('text/html', Buffer.from([0xff, 0xd8, 0xff])), null);
+});
+
+test('imports a direct image URL after validating its content signature', async () => {
+  const imageDir = mkdtempSync(path.join(tmpdir(), 'regalos-image-test-'));
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  try {
+    const imagePath = await importImageFromUrl('https://cdn.example/product.png', imageDir, undefined, async url => ({
+      status: 200, headers: { 'content-type': 'image/png' }, body: png, finalUrl: new URL(url),
+    }));
+    assert.match(imagePath, /^\/images\/[a-f0-9]{32}\.png$/);
+    assert.deepEqual(readFileSync(path.join(imageDir, path.basename(imagePath))), png);
+    assert.equal(await importImageFromUrl('https://cdn.example/fake.jpg', imageDir, undefined, async url => ({
+      status: 200, headers: { 'content-type': 'image/jpeg' }, body: png, finalUrl: new URL(url),
+    })).then(() => false, () => true), true);
+  } finally { rmSync(imageDir, { recursive: true, force: true }); }
 });
 
 test('uses Amazon product-page fields and URL slug fallbacks on Amazon marketplaces', () => {

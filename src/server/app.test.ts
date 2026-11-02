@@ -110,6 +110,23 @@ test('owner wishlist stays identical after a claim; visitors see the buyer and c
   assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${alice.id}/items`, headers: { cookie: bob.cookie } })).json()[0].reservedBy, null);
 });
 
+test('owner deletion notifies the buyer until they dismiss the notice', async () => {
+  alice = await profile('Propietaria');
+  bob = await profile('Comprador');
+  const desire = await item(alice.cookie, 'Taza azul');
+  await app.inject({ method: 'POST', url: `/api/items/${desire.id}/claim`, headers: { cookie: bob.cookie }, payload: {} });
+
+  const removed = await app.inject({ method: 'DELETE', url: `/api/items/${desire.id}`, headers: { cookie: alice.cookie } });
+  assert.equal(removed.statusCode, 200);
+  const buyerNotices = await app.inject({ method: 'GET', url: '/api/notifications', headers: { cookie: bob.cookie } });
+  assert.deepEqual(buyerNotices.json().map((notice: any) => ({ itemTitle: notice.itemTitle, deletedBy: notice.deletedBy })), [{ itemTitle: 'Taza azul', deletedBy: 'Propietaria' }]);
+  const noticeId = buyerNotices.json()[0].id;
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/notifications', headers: { cookie: alice.cookie } })).json(), []);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/notifications/${noticeId}`, headers: { cookie: alice.cookie } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/notifications/${noticeId}`, headers: { cookie: bob.cookie } })).statusCode, 200);
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/notifications', headers: { cookie: bob.cookie } })).json(), []);
+});
+
 test('supports item and alternative CRUD while enforcing profile ownership and one claim', async () => {
   alice = await profile('Cris'); bob = await profile('Dani');
   const desire = await item(alice.cookie, 'Mochila');
@@ -142,6 +159,34 @@ test('saves a wishlist link with an image when the page has no title or price', 
   assert.equal(response.json().url, 'https://shop.example/products/pretty-lamp.html');
   assert.equal(response.json().imagePath, '/images/lamp.jpg');
   assert.equal(response.json().price, null);
+});
+
+test('bulk-deletes selected wishes only from the signed-in profile', async () => {
+  alice = await profile('Selección');
+  bob = await profile('Otra lista');
+  const first = await item(alice.cookie, 'Uno');
+  const second = await item(alice.cookie, 'Dos');
+  const foreign = await item(bob.cookie, 'Ajeno');
+  await app.inject({ method: 'POST', url: `/api/items/${first.id}/claim`, headers: { cookie: bob.cookie }, payload: {} });
+
+  const invalid = await app.inject({ method: 'POST', url: '/api/items/mine/delete-selected', headers: { cookie: alice.cookie }, payload: { itemIds: [first.id, foreign.id] } });
+  assert.equal(invalid.statusCode, 404);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: alice.cookie } })).json().length, 2);
+
+  const deleted = await app.inject({ method: 'POST', url: '/api/items/mine/delete-selected', headers: { cookie: alice.cookie }, payload: { itemIds: [first.id] } });
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal(deleted.json().deleted, 1);
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: alice.cookie } })).json().map((row: any) => row.id), [second.id]);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].id, foreign.id);
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/notifications', headers: { cookie: bob.cookie } })).json().map((notice: any) => ({ itemTitle: notice.itemTitle, deletedBy: notice.deletedBy })), [{ itemTitle: 'Uno', deletedBy: 'Selección' }]);
+});
+
+test('manual image URL import requires a session and rejects private targets', async () => {
+  const unauthenticated = await app.inject({ method: 'POST', url: '/api/images/import', payload: { url: 'https://example.com/image.png' } });
+  assert.equal(unauthenticated.statusCode, 401);
+  alice = await profile('Imagen URL');
+  const privateTarget = await app.inject({ method: 'POST', url: '/api/images/import', headers: { cookie: alice.cookie }, payload: { url: 'http://127.0.0.1/image.png' } });
+  assert.equal(privateTarget.statusCode, 400);
 });
 
 test('scraper rejects private targets and rechecks redirect destinations before making the next request', async () => {

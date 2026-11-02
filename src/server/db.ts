@@ -46,7 +46,19 @@ CREATE TABLE IF NOT EXISTS claims (
   item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
   profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  item_title TEXT NOT NULL,
+  deleted_by TEXT NOT NULL DEFAULT 'El propietario',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `);
+
+const notificationColumns = db.prepare('PRAGMA table_info(notifications)').all() as Array<{ name: string }>;
+if (!notificationColumns.some(column => column.name === 'deleted_by')) {
+  db.exec("ALTER TABLE notifications ADD COLUMN deleted_by TEXT NOT NULL DEFAULT 'El propietario'");
+}
 
 // Upgrade databases created before profile roles existed. Existing homes get
 // one owner account so admin settings remain reachable after the upgrade.

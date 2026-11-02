@@ -484,18 +484,27 @@ const extensionFor = (contentType: string, url: URL) => {
 
 export function verifiedImageType(contentType: string, body: Buffer): string | null {
   const type = contentType.split(';')[0].trim().toLowerCase();
-  const supported = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
-  if (supported.has(type)) return type;
-  // Some store CDNs return a correct image body with the generic
-  // application/octet-stream header. Accept it only when the file signature
-  // proves it is one of the raster formats GiftApp serves.
-  if (!/^(?:application|binary)\/(?:x-)?octet-stream$/.test(type)) return null;
-  if (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return 'image/jpeg';
-  if (body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
-  if (body.length >= 6 && /^GIF8[79]a$/.test(body.toString('ascii', 0, 6))) return 'image/gif';
-  if (body.length >= 12 && body.toString('ascii', 4, 8) === 'ftyp' && /^(?:avif|avis)$/.test(body.toString('ascii', 8, 12))) return 'image/avif';
-  return null;
+  const detected = body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff ? 'image/jpeg'
+    : body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? 'image/png'
+      : body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp'
+        : body.length >= 6 && /^GIF8[79]a$/.test(body.toString('ascii', 0, 6)) ? 'image/gif'
+          : body.length >= 12 && body.toString('ascii', 4, 8) === 'ftyp' && /^(?:avif|avis)$/.test(body.toString('ascii', 8, 12)) ? 'image/avif'
+            : null;
+  if (!detected) return null;
+  if (/^(?:application|binary)\/(?:x-)?octet-stream$/.test(type)) return detected;
+  return type === detected ? detected : null;
+}
+
+export async function importImageFromUrl(rawUrl: string, imageDir: string, userAgent?: string, fetchImage: typeof safeGet = safeGet) {
+  const imageUrl = normalizeProductUrl(rawUrl);
+  const response = await fetchImage(imageUrl.toString(), IMAGE_LIMIT, resolvePublic, requestOnce, userAgent, {
+    accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  });
+  const type = verifiedImageType(String(response.headers['content-type'] ?? ''), response.body);
+  if (!type || response.body.length === 0) throw new Error('URL did not return a supported image');
+  const filename = `${randomBytes(16).toString('hex')}${extensionFor(type, response.finalUrl)}`;
+  await writeFile(path.join(imageDir, filename), response.body, { flag: 'wx' });
+  return `/images/${filename}`;
 }
 
 export function normalizeProductUrl(rawUrl: string) {
@@ -558,6 +567,13 @@ async function fetchIframelyPreview(pageUrl: string, userAgent?: string) {
   }
 }
 
+function unsafePageTarget(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  // Never send a URL rejected by our SSRF checks to a third-party previewer.
+  // safeGet applies these checks to both the original host and every redirect.
+  return /^(?:Private or reserved address|Host resolves to a private or reserved address|Unsupported URL|Invalid port)$/.test(message);
+}
+
 export async function scrapeProduct(rawUrl: string, imageDir: string, userAgent?: string, onImageError?: (host: string, message: string) => void) {
   const pageUrl = normalizeProductUrl(rawUrl);
   const requestedUrl = pageUrl.toString();
@@ -574,8 +590,9 @@ export async function scrapeProduct(rawUrl: string, imageDir: string, userAgent?
     result = parseProductHtml(page.body.toString('utf8'), productUrl);
   } catch (error) {
     // Some retailers reject server-side requests with anti-bot challenges.
-    // Keep an editable partial preview; do not try to bypass those protections.
-    if (!isAmazon && !isLeroy) throw error;
+    // Keep an editable partial preview and ask Iframely for a generic link card;
+    // do not try to bypass the retailer's protections. SSRF rejections stay fatal.
+    if (unsafePageTarget(error)) throw error;
     const denied = error instanceof Error && /Remote status 403/.test(error.message);
     const knownLeroyProduct = isLeroy ? leroyProductFallback(requestedUrl) : null;
     scrapeWarning = isLeroy && denied && knownLeroyProduct
@@ -601,9 +618,9 @@ export async function scrapeProduct(rawUrl: string, imageDir: string, userAgent?
       if (result.price === null && preview.price !== null) result.price = preview.price;
       if ((!result.currency || result.currency === 'EUR') && preview.currency) result.currency = preview.currency;
       if (preview.title || preview.imageUrl || preview.price !== null) {
-        scrapeWarning = result.price === null
-          ? 'Vista previa completada. Comprueba el precio antes de guardar.'
-          : null;
+        scrapeWarning = result.imageUrl
+          ? null
+          : 'La vista previa encontró el producto, pero no proporcionó una miniatura. Puedes importar una pegando la URL directa de la imagen abajo.';
       }
     }
   }
@@ -632,7 +649,7 @@ export async function scrapeProduct(rawUrl: string, imageDir: string, userAgent?
     }
   }
   if (!result.imagePath && imageDownloadFailed && !scrapeWarning) {
-    scrapeWarning = 'Encontramos los datos del producto, pero la tienda no permitió guardar la imagen. Puedes añadirla manualmente.';
+    scrapeWarning = 'Encontramos los datos del producto, pero la tienda no permitió guardar la imagen. Puedes importar una pegando la URL directa de la imagen abajo.';
   }
   delete (result as any).imageUrl;
   return { ...result, scrapeWarning };
