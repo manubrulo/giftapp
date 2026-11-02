@@ -1,0 +1,12 @@
+services:
+  regalos:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Optional generic metadata fallback for stores that block local fetches.
+      - IFRAMELY_API_KEY=${IFRAMELY_API_KEY:-}
+    volumes:
+      # En TrueNAS: cambia por la ruta de tu dataset, p. ej. /mnt/tank/apps/regalos
+      - ./data:/data

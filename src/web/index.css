@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #F1F4EE;
+  --color-ink: #17302B;
+  --color-ribbon: #C9304F;
+  --color-moss: #DDE5D8;
+  --font-sans: ui-rounded, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+}
+body { background: var(--color-paper); color: var(--color-ink); font-family: var(--font-sans); }
