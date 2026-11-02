@@ -1,3 +1,6 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+overrides:
+  fast-uri: ^4.2.3
+  glob@13: ^14.0.2
