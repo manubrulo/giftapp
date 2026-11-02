@@ -1,0 +1,18 @@
+# Paste this into TrueNAS Apps > Discover > Install via YAML.
+# Before deploying, replace the image and host dataset path with your values.
+services:
+  regalos:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/giftapp:latest
+    pull_policy: always
+    restart: unless-stopped
+    user: "568:568"
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      PORT: "3000"
+      # Optional: enables the Iframely preview fallback.
+      # IFRAMELY_API_KEY: replace-with-your-key
+    volumes:
+      - /mnt/YOUR_POOL/apps/giftapp:/data
