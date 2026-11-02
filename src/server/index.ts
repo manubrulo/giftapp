@@ -6,7 +6,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { scrapeProduct } from './scrape.js';
+import { importImageFromUrl, scrapeProduct } from './scrape.js';
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
@@ -105,6 +105,12 @@ const publicItem = (row: any) => ({
   } : {}),
 });
 const alternativesFor = (itemId: number) => db.prepare('SELECT id, url, title, price, image_path as imagePath, note FROM alternatives WHERE item_id = ? ORDER BY id').all(itemId);
+const notifyBuyerBeforeItemDelete = (itemId: number, itemTitle: string, ownerId: number, ownerName: string) => {
+  const claim = db.prepare('SELECT profile_id FROM claims WHERE item_id = ?').get(itemId) as { profile_id: number } | undefined;
+  if (claim && claim.profile_id !== ownerId) {
+    db.prepare('INSERT INTO notifications (profile_id, item_title, deleted_by) VALUES (?, ?, ?)').run(claim.profile_id, itemTitle, ownerName);
+  }
+};
 const myItems = (profileId: number) => {
   // PRIVACY: this owner-only query deliberately never reads the claims table.
   const rows = db.prepare('SELECT * FROM items WHERE profile_id = ? ORDER BY created_at DESC, id DESC').all(profileId) as any[];
@@ -176,6 +182,22 @@ export async function buildApp() {
     return { me: p ? publicProfile(p) : null };
   });
 
+  app.get('/api/notifications', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    return db.prepare('SELECT id, item_title AS itemTitle, deleted_by AS deletedBy, created_at AS createdAt FROM notifications WHERE profile_id = ? ORDER BY id DESC').all(me.id);
+  });
+
+  app.delete('/api/notifications/:notificationId', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const id = positiveId((req.params as any).notificationId);
+    if (id === null) return reply.code(400).send({ error: 'Aviso no válido' });
+    const result = db.prepare('DELETE FROM notifications WHERE id = ? AND profile_id = ?').run(id, me.id);
+    if (!result.changes) return reply.code(404).send({ error: 'No encontramos ese aviso' });
+    return { ok: true };
+  });
+
   app.put('/api/me/profile', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
@@ -202,8 +224,32 @@ export async function buildApp() {
   app.delete('/api/items/mine', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
-    const result = db.prepare('DELETE FROM items WHERE profile_id = ?').run(me.id);
-    return { ok: true, deleted: result.changes };
+    const items = db.prepare('SELECT id, title FROM items WHERE profile_id = ?').all(me.id) as Array<{ id: number; title: string }>;
+    const remove = db.transaction(() => {
+      for (const item of items) notifyBuyerBeforeItemDelete(item.id, item.title, me.id, me.name);
+      return db.prepare('DELETE FROM items WHERE profile_id = ?').run(me.id).changes;
+    });
+    return { ok: true, deleted: remove() };
+  });
+
+  app.post('/api/items/mine/delete-selected', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const itemIds = (req.body as any)?.itemIds;
+    if (!Array.isArray(itemIds) || itemIds.length < 1 || itemIds.length > 500
+      || itemIds.some(id => !Number.isSafeInteger(id) || id <= 0)
+      || new Set(itemIds).size !== itemIds.length) {
+      return reply.code(400).send({ error: 'Selecciona entre 1 y 500 deseos válidos' });
+    }
+    const placeholders = itemIds.map(() => '?').join(', ');
+    const owned = Number((db.prepare(`SELECT COUNT(*) AS count FROM items WHERE profile_id = ? AND id IN (${placeholders})`).get(me.id, ...itemIds) as any).count);
+    if (owned !== itemIds.length) return reply.code(404).send({ error: 'Uno o más deseos ya no están disponibles en tu lista' });
+    const selectedItems = db.prepare(`SELECT id, title FROM items WHERE profile_id = ? AND id IN (${placeholders})`).all(me.id, ...itemIds) as Array<{ id: number; title: string }>;
+    const remove = db.transaction(() => {
+      for (const item of selectedItems) notifyBuyerBeforeItemDelete(item.id, item.title, me.id, me.name);
+      return db.prepare(`DELETE FROM items WHERE profile_id = ? AND id IN (${placeholders})`).run(me.id, ...itemIds).changes;
+    });
+    return { ok: true, deleted: remove() };
   });
 
   app.get('/api/admin/profiles', async (req, reply) => {
@@ -280,6 +326,19 @@ export async function buildApp() {
     }
   });
 
+  app.post('/api/images/import', async (req, reply) => {
+    if (!requireProfile(req, reply)) return;
+    const url = (req.body as any)?.url;
+    if (typeof url !== 'string' || !url.trim() || url.length > 2048) return reply.code(400).send({ error: 'Pega la URL directa de una imagen' });
+    try {
+      const userAgent = req.headers['user-agent'];
+      const imagePath = await importImageFromUrl(url, IMAGE_DIR, typeof userAgent === 'string' ? userAgent : undefined);
+      return reply.code(201).send({ imagePath });
+    } catch {
+      return reply.code(400).send({ error: 'No pudimos importar esa imagen. Comprueba que el enlace directo sea público y apunte a JPEG, PNG, WebP, GIF o AVIF.' });
+    }
+  });
+
   app.get('/api/items/mine', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
@@ -336,8 +395,13 @@ export async function buildApp() {
     if (!me) return;
     const id = positiveId((req.params as any).itemId);
     if (id === null) return reply.code(400).send({ error: 'Deseo no válido' });
-    const result = db.prepare('DELETE FROM items WHERE id = ? AND profile_id = ?').run(id, me.id);
-    if (!result.changes) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    const existing = db.prepare('SELECT title FROM items WHERE id = ? AND profile_id = ?').get(id, me.id) as { title: string } | undefined;
+    if (!existing) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    const remove = db.transaction(() => {
+      notifyBuyerBeforeItemDelete(id, existing.title, me.id, me.name);
+      return db.prepare('DELETE FROM items WHERE id = ? AND profile_id = ?').run(id, me.id).changes;
+    });
+    if (!remove()) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     return { ok: true };
   });
 
