@@ -7,4 +7,8 @@
   --color-moss: #DDE5D8;
   --font-sans: ui-rounded, "Avenir Next", "Segoe UI", system-ui, sans-serif;
 }
-body { background: var(--color-paper); color: var(--color-ink); font-family: var(--font-sans); }
+* { box-sizing: border-box; }
+html { min-width: 320px; -webkit-text-size-adjust: 100%; }
+body { margin: 0; min-width: 320px; background: var(--color-paper); color: var(--color-ink); font-family: var(--font-sans); }
+button, input, select, textarea { font: inherit; }
+button { touch-action: manipulation; }

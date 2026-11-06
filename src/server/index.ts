@@ -10,6 +10,10 @@ import { importImageFromUrl, scrapeProduct } from './scrape.js';
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
+const BASE_PATH = (process.env.BASE_PATH ?? '').trim().replace(/\/+$/, '');
+if (BASE_PATH && (!BASE_PATH.startsWith('/') || BASE_PATH.includes('?') || BASE_PATH.includes('#'))) {
+  throw new Error('BASE_PATH must be an absolute URL path such as /giftapp');
+}
 mkdirSync(IMAGE_DIR, { recursive: true });
 
 // --- PIN (scrypt, sin dependencias) ---
@@ -130,7 +134,16 @@ function isConstraintError(error: unknown) {
 }
 
 export async function buildApp() {
-  const app = Fastify({ logger: process.env.NODE_ENV !== 'test', bodyLimit: 2 * 1024 * 1024 });
+  const app = Fastify({
+    logger: process.env.NODE_ENV !== 'test',
+    bodyLimit: 2 * 1024 * 1024,
+    rewriteUrl: request => {
+      const url = request.url ?? '/';
+      return BASE_PATH && (url === BASE_PATH || url.startsWith(`${BASE_PATH}/`))
+        ? url.slice(BASE_PATH.length) || '/'
+        : url;
+    },
+  });
   await app.register(cookie);
 
   app.get('/api/profiles', async () =>
@@ -174,7 +187,7 @@ export async function buildApp() {
 
   app.post('/api/logout', async (req, reply) => {
     if (req.cookies.sid) db.prepare('DELETE FROM sessions WHERE token = ?').run(req.cookies.sid);
-    reply.clearCookie('sid', { path: '/' });
+    reply.clearCookie('sid', { path: BASE_PATH || '/' });
     return { ok: true };
   });
   app.get('/api/me', async req => {
@@ -499,7 +512,7 @@ export async function buildApp() {
 const startSession = (reply: FastifyReply, profileId: number) => {
   const token = randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (token, profile_id) VALUES (?, ?)').run(token, profileId);
-  reply.setCookie('sid', token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 30 });
+  reply.setCookie('sid', token, { httpOnly: true, sameSite: 'lax', path: BASE_PATH || '/', maxAge: 60 * 60 * 24 * 30 });
 };
 
 const thisFile = fileURLToPath(import.meta.url);

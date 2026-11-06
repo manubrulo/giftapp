@@ -12,6 +12,8 @@ services:
       NODE_ENV: production
       DATA_DIR: /data
       PORT: "3000"
+      # Match the prefix preserved by Caddy's handle /giftapp/* reverse_proxy.
+      BASE_PATH: /giftapp
       # Optional: enables the Iframely preview fallback.
       # IFRAMELY_API_KEY: replace-with-your-key
     volumes:

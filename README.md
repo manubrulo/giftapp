@@ -45,6 +45,10 @@ pnpm probe:scrape https://shop.example/product https://another-shop.example/item
 
 The script calls the authenticated `POST /api/scrape` endpoint sequentially and prints each API response plus `imageDownloaded`. Add `--add` to also create wishlist entries through `POST /api/items`; those entries are marked with category `Prueba de extracción`, and an existing item with the same URL is updated instead of duplicated. Use `pnpm probe:scrape --cleanup` to delete all wishes with that test category. Preview images that were downloaded remain in `DATA_DIR/images`, just as they do after a normal preview. Set `API_BASE_URL` if GiftApp is not at `http://127.0.0.1:3000`.
 
+### Reverse proxy under a URL prefix
+
+GiftApp supports being served at `/` or from a subdirectory. For the Caddy `handle /giftapp/*` configuration, set `BASE_PATH=/giftapp` in the container environment. Keep the prefix on the upstream request (do not use `handle_path`); the server removes the configured prefix internally. The TrueNAS compose example already sets this value. The app uses relative frontend assets, API requests, and image paths, so the same image can be mounted at either location.
+
 ## Check the project
 
 ```sh
