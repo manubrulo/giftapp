@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useState } from 'react';
-import { api } from './api';
+import { api, appAssetUrl } from './api';
 
 type Profile = { id: number; name: string; avatar: string; hasPin: boolean; role: 'member' | 'admin' };
 type AdminProfile = Profile & { itemCount: number; createdAt?: string };
@@ -90,7 +90,7 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     let live = true;
     const loadNotices = () => api<Notice[]>('/notifications').then(data => { if (live) setNotices(data); }).catch(() => {});
     loadNotices();
-    const interval = window.setInterval(loadNotices, 30000);
+    const interval = window.setInterval(loadNotices, 10000);
     window.addEventListener('focus', loadNotices);
     return () => { live = false; window.clearInterval(interval); window.removeEventListener('focus', loadNotices); };
   }, []);
@@ -99,7 +99,10 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     setBusy(true); setError('');
     const route = ownList ? '/items/mine' : `/profiles/${viewingId}/items`;
     api<Item[]>(route).then(data => { if (live) setItems(data); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
-    return () => { live = false; };
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setReload(n => n + 1);
+    }, 15000);
+    return () => { live = false; window.clearInterval(interval); };
   }, [ownList, viewingId, reload]);
   useEffect(() => {
     setSelectionMode(false);
@@ -273,7 +276,7 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
   };
   return <>
     {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
-    {item.imagePath && <img src={item.imagePath} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" />}
+    {item.imagePath && <img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" />}
     <div className={`p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
       <div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <p className="mt-1 text-sm opacity-70">{item.category}</p>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
@@ -333,7 +336,7 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
       {!item && <div className="mb-4 flex gap-2"><input className={input} type="url" placeholder="Pega el enlace del producto" value={draft.url} onChange={e => set('url', e.target.value)} /><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Buscar'}</button></div>}
       {scrapeNotice && <p role="status" className="mb-4 rounded-xl border border-amber-700/20 bg-amber-100 p-3 text-sm text-amber-950">{scrapeNotice}</p>}
-      {draft.imagePath && <img src={draft.imagePath} alt="Vista previa del producto" className="mb-4 h-40 w-full rounded-xl bg-white object-contain p-2" />}
+      {draft.imagePath && <img src={appAssetUrl(draft.imagePath)} alt="Vista previa del producto" className="mb-4 h-40 w-full rounded-xl bg-white object-contain p-2" />}
       <div className="mb-4 space-y-2">
         <label className="block space-y-1"><span className="font-semibold">Miniatura (opcional)</span><input className={input} type="url" placeholder="Pega la URL directa de una imagen" value={imageUrl} onChange={e => setImageUrl(e.target.value)} /></label>
         <p className="text-sm opacity-70">Pega el enlace directo de la imagen; si copias el HTML, usa el valor de <code>src</code>.</p>
