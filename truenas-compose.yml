@@ -11,6 +11,7 @@ services:
     environment:
       NODE_ENV: production
       DATA_DIR: /data
+      WEB_DIR: /frontend
       PORT: "3000"
       # Match the prefix preserved by Caddy's handle /giftapp/* reverse_proxy.
       BASE_PATH: /giftapp
@@ -18,3 +19,4 @@ services:
       # IFRAMELY_API_KEY: replace-with-your-key
     volumes:
       - /mnt/YOUR_POOL/apps/giftapp:/data
+      - /mnt/YOUR_POOL/apps/giftapp-frontend:/frontend:ro

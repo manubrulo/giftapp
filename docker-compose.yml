@@ -10,3 +10,7 @@ services:
     volumes:
       # En TrueNAS: cambia por la ruta de tu dataset, p. ej. /mnt/tank/apps/regalos
       - ./data:/data
+      # Build the frontend with `pnpm build` and copy dist/web into this directory.
+      - ./frontend:/frontend:ro
+    environment:
+      - WEB_DIR=/frontend

@@ -501,7 +501,7 @@ export async function buildApp() {
   });
 
   // --- Frontend compilado (producción) y producto descargado ---
-  const webDir = path.resolve('dist/web');
+  const webDir = path.resolve(process.env.WEB_DIR ?? 'dist/web');
   if (existsSync(webDir)) await app.register(fstatic, { root: webDir });
   await app.register(fstatic, { root: IMAGE_DIR, prefix: '/images/', decorateReply: false });
   if (existsSync(webDir)) app.setNotFoundHandler((req, reply) =>

@@ -1,6 +1,8 @@
 import { FormEvent, ReactNode, useEffect, useState } from 'react';
 import { api, appAssetUrl } from './api';
 
+declare const __APP_VERSION__: string;
+
 type Profile = { id: number; name: string; avatar: string; hasPin: boolean; role: 'member' | 'admin' };
 type AdminProfile = Profile & { itemCount: number; createdAt?: string };
 type Notice = { id: number; itemTitle: string; deletedBy: string; createdAt: string };
@@ -26,7 +28,7 @@ export default function App() {
 }
 
 function Shell({ children }: { children: ReactNode }) {
-  return <main className="mx-auto min-h-screen max-w-5xl px-5 pb-12 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8">{children}</main>;
+  return <main className="app-shell mx-auto flex min-h-screen max-w-5xl flex-col px-5 pb-6 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8"><div className="flex-1">{children}</div><footer className="pt-6 text-center text-xs opacity-60">Regalos · v{__APP_VERSION__}</footer></main>;
 }
 
 function Picker({ onLogin }: { onLogin: (p: Profile) => void }) {
@@ -137,17 +139,17 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     } catch (e) { setError(errorText(e)); }
   };
   return <Shell>
-    <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
+    <header className="home-header mb-8 flex flex-wrap items-center justify-between gap-4">
       <div><p className="text-sm opacity-70">Regalos</p><h1 className="text-3xl font-bold tracking-tight">{me.avatar} {me.name}{me.role === 'admin' && <span className="ml-2 rounded-full bg-moss px-2 py-1 align-middle text-xs">Admin</span>}</h1></div>
-      <div className="flex gap-2"><button className={`${btn} bg-moss`} onClick={() => setSettingsOpen(true)}>Ajustes</button><button className={`${btn} bg-moss`} onClick={onLogout}>Cambiar de perfil</button></div>
+      <div className="home-actions flex gap-2"><button className={`${btn} bg-moss`} onClick={() => setSettingsOpen(true)}>Ajustes</button><button className={`${btn} bg-moss`} onClick={onLogout}>Cambiar de perfil</button></div>
     </header>
     {notices.length > 0 && <section aria-label="Avisos" className="mb-6 space-y-2">{notices.map(notice => <div key={notice.id} role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-700/20 bg-amber-100 p-4 text-amber-950"><p>{notice.deletedBy} ha eliminado «{notice.itemTitle}» de su lista.</p><button className={`${btn} bg-paper`} onClick={() => dismissNotice(notice)}>Descartar</button></div>)}</section>}
     <nav aria-label="Listas" className="mb-7 flex gap-2 overflow-x-auto pb-2">
       <button onClick={() => setViewingId(me.id)} aria-pressed={ownList} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${ownList ? 'bg-ink text-white' : 'bg-moss'}`}>Mi lista</button>
       {profiles.filter(p => p.id !== me.id).map(p => <button key={p.id} onClick={() => setViewingId(p.id)} aria-pressed={viewingId === p.id} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${viewingId === p.id ? 'bg-ink text-white' : 'bg-moss'}`}>{p.avatar} {p.name}</button>)}
     </nav>
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
-      {ownList && <div className="flex flex-wrap gap-2">
+    <div className="home-summary mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
+      {ownList && <div className="home-list-actions flex flex-wrap gap-2">
         {selectionMode ? <>
           <button className={`${btn} bg-moss`} onClick={() => { setSelectionMode(false); setSelectedIds([]); }}>Cancelar</button>
           <button className={`${btn} bg-moss`} onClick={() => setSelectedIds(selectedIds.length === items.length ? [] : items.map(item => item.id))}>{selectedIds.length === items.length ? 'Quitar selección' : 'Seleccionar todo'}</button>
@@ -160,7 +162,7 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando deseos…</p> : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
-      <div className="grid gap-4 sm:grid-cols-2">{items.map(item => <article key={item.id} className="overflow-hidden rounded-2xl bg-moss">
+      <div className="wishlist-grid grid gap-4 sm:grid-cols-2">{items.map(item => <article key={item.id} className="item-card overflow-hidden rounded-2xl bg-moss">
         <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
       </article>)}</div>}
     {editing !== false && <ItemEditor item={editing} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />}
@@ -211,7 +213,7 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
     catch (e) { setError(errorText(e)); }
   };
   return <div className="fixed inset-0 z-20 overflow-y-auto bg-ink/50 p-4" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="settings-title" className="mx-auto my-5 max-w-2xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
+    <section role="dialog" aria-modal="true" aria-labelledby="settings-title" className="modal-panel mx-auto my-5 max-w-2xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
       <div className="mb-5 flex items-center justify-between gap-3"><h2 id="settings-title" className="text-2xl font-bold">Ajustes</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
       <form onSubmit={saveProfile} className="space-y-4">
         <h3 className="text-lg font-bold">Mi perfil</h3>
@@ -241,7 +243,7 @@ function AdminProfileRow({ profile, self, onSave, onDelete }: {
   const [clearPin, setClearPin] = useState(false);
   useEffect(() => { setName(profile.name); setAvatar(profile.avatar); setRole(profile.role); }, [profile]);
   return <form className="rounded-xl border border-ink/15 p-3" onSubmit={e => { e.preventDefault(); onSave({ name, avatar, role, ...(clearPin ? { pin: null } : pin ? { pin } : {}) }); setPin(''); setClearPin(false); }}>
-    <div className="mb-2 flex items-center justify-between gap-2"><span className="font-semibold">{profile.avatar} {profile.name} · {profile.itemCount} deseos</span>{!self && <button type="button" className="text-sm text-ribbon underline" onClick={onDelete}>Eliminar perfil</button>}</div>
+      <div className="admin-row-heading mb-2 flex items-center justify-between gap-2"><span className="font-semibold">{profile.avatar} {profile.name} · {profile.itemCount} deseos</span>{!self && <button type="button" className="text-sm text-ribbon underline" onClick={onDelete}>Eliminar perfil</button>}</div>
     <div className="grid gap-2 sm:grid-cols-2"><input className={input} aria-label={`Nombre de ${profile.name}`} value={name} onChange={e => setName(e.target.value)} maxLength={30} required /><select className={input} aria-label={`Rol de ${profile.name}`} value={role} disabled={self} onChange={e => setRole(e.target.value as 'admin' | 'member')}><option value="member">Miembro</option><option value="admin">Administrador</option></select></div>
     <div className="mt-2 flex flex-wrap gap-2">{AVATARS.map(a => <button type="button" key={a} onClick={() => setAvatar(a)} aria-label={`Avatar ${a} para ${profile.name}`} aria-pressed={a === avatar} className={`size-9 rounded-lg text-xl ${a === avatar ? 'bg-ink text-white' : 'bg-moss'}`}>{a}</button>)}</div>
     <div className="mt-2 flex flex-wrap items-center gap-2"><input className={`${input} min-w-40 flex-1`} placeholder={profile.hasPin ? 'PIN nuevo (vacío = mantener)' : 'PIN opcional'} inputMode="numeric" type="password" value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, '').slice(0, 8)); setClearPin(false); }} />{profile.hasPin && <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={clearPin} onChange={e => { setClearPin(e.target.checked); setPin(''); }} /> Quitar PIN</label>}<button className={`${btn} bg-moss`}>Guardar</button></div>
@@ -276,16 +278,16 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
   };
   return <>
     {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
-    {item.imagePath && <img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" />}
-    <div className={`p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
-      <div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <p className="mt-1 text-sm opacity-70">{item.category}</p>}</div>
+    {item.imagePath && <div className="item-card-image"><img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" /></div>}
+    <div className={`item-card-content p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
+      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <p className="mt-1 text-sm opacity-70">{item.category}</p>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
       </div>
       {item.price != null && <p className="mt-3 text-lg font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(item.price)}</p>}
       {item.notes && <p className="mt-3 whitespace-pre-wrap">{item.notes}</p>}
       {item.url && <a className="mt-3 inline-block font-semibold underline decoration-ribbon underline-offset-4" href={item.url} target="_blank" rel="noreferrer">Ver enlace ↗</a>}
       {item.alternatives.length > 0 && <div className="mt-4 border-t border-ink/15 pt-3"><p className="mb-2 font-semibold">También me valen</p><ul className="space-y-2">{item.alternatives.map(alt => <li key={alt.id} className="flex items-start justify-between gap-2 text-sm"><div>{alt.url ? <a className="underline" href={alt.url} target="_blank" rel="noreferrer">{alt.title || alt.url}</a> : <span>{alt.title}</span>}{alt.price != null && <span className="ml-2 font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(alt.price)}</span>}{alt.note && <p className="opacity-70">{alt.note}</p>}</div>{ownList && <div className="flex gap-2"><button className="text-ink underline" onClick={() => { setEditingAlt(alt); setAltUrl(alt.url ?? ''); setAltTitle(alt.title ?? ''); setAltPrice(alt.price == null ? '' : String(alt.price)); setAltNote(alt.note ?? ''); setAltOpen(true); }}>Editar</button><button className="text-ribbon" onClick={() => removeAlternative(alt)} aria-label={`Quitar ${alt.title || 'alternativa'}`}>×</button></div>}</li>)}</ul></div>}
-      {ownList ? !selectionMode && <div className="mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
+      {ownList ? !selectionMode && <div className="item-card-actions mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="reservation-row mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
         {item.reservedBy ? myClaim ? <button className={`${btn} bg-moss`} onClick={onCancelClaim}>Quitar mi reserva</button> : null : <button className={primary} onClick={onClaim}>Lo compro</button>}</div>}
       {altOpen && <form onSubmit={addAlternative} className="mt-4 space-y-2 rounded-xl bg-paper p-3"><p className="font-semibold">{editingAlt ? 'Editar alternativa' : 'Añadir alternativa'}</p><input className={input} placeholder="Enlace" type="url" value={altUrl} onChange={e => setAltUrl(e.target.value)} /><input className={input} placeholder="Nombre (opcional)" value={altTitle} onChange={e => setAltTitle(e.target.value)} /><input className={input} placeholder="Precio (opcional)" type="number" min="0" step="0.01" value={altPrice} onChange={e => setAltPrice(e.target.value)} /><input className={input} placeholder="Nota (opcional)" value={altNote} onChange={e => setAltNote(e.target.value)} />{localError && <p role="alert" className="text-sm text-ribbon">{localError}</p>}<button className={`${btn} bg-ink text-white`}>{editingAlt ? 'Guardar cambios' : 'Guardar alternativa'}</button></form>}
       {localError && !altOpen && <p role="alert" className="mt-2 text-sm text-ribbon">{localError}</p>}
@@ -332,9 +334,9 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
     finally { setSaving(false); }
   };
   return <div className="fixed inset-0 z-10 overflow-y-auto bg-ink/50 p-4" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="editor-title" className="mx-auto my-5 max-w-xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
+    <section role="dialog" aria-modal="true" aria-labelledby="editor-title" className="modal-panel mx-auto my-5 max-w-xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
       <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
-      {!item && <div className="mb-4 flex gap-2"><input className={input} type="url" placeholder="Pega el enlace del producto" value={draft.url} onChange={e => set('url', e.target.value)} /><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Buscar'}</button></div>}
+      {!item && <div className="editor-url-row mb-4 flex gap-2"><input className={input} type="url" placeholder="Pega el enlace del producto" value={draft.url} onChange={e => set('url', e.target.value)} /><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Buscar'}</button></div>}
       {scrapeNotice && <p role="status" className="mb-4 rounded-xl border border-amber-700/20 bg-amber-100 p-3 text-sm text-amber-950">{scrapeNotice}</p>}
       {draft.imagePath && <img src={appAssetUrl(draft.imagePath)} alt="Vista previa del producto" className="mb-4 h-40 w-full rounded-xl bg-white object-contain p-2" />}
       <div className="mb-4 space-y-2">
@@ -344,8 +346,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       </div>
       <form onSubmit={save} className="space-y-3">
         <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
-        {item && <div className="flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
-        <div className="grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="number" min="0" step="0.01" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
+        {item && <div className="editor-url-row flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
+        <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="number" min="0" step="0.01" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
         <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} placeholder="Por ejemplo: libros" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /></label>
         <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>
         <label className="block space-y-1"><span className="font-semibold">Notas</span><textarea className={input} rows={3} value={draft.notes} onChange={e => set('notes', e.target.value)} maxLength={2000} /></label>
