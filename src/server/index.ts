@@ -2,7 +2,7 @@ import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import fstatic from '@fastify/static';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
@@ -501,7 +501,14 @@ export async function buildApp() {
   });
 
   // --- Frontend compilado (producción) y producto descargado ---
-  const webDir = path.resolve(process.env.WEB_DIR ?? 'dist/web');
+  const bundledWebDir = path.resolve('dist/web');
+  const webDir = path.resolve(process.env.WEB_DIR ?? bundledWebDir);
+  if (process.env.WEB_DIR) {
+    mkdirSync(webDir, { recursive: true });
+    if (!existsSync(path.join(webDir, 'index.html'))) {
+      cpSync(bundledWebDir, webDir, { recursive: true });
+    }
+  }
   if (existsSync(webDir)) await app.register(fstatic, { root: webDir });
   await app.register(fstatic, { root: IMAGE_DIR, prefix: '/images/', decorateReply: false });
   if (existsSync(webDir)) app.setNotFoundHandler((req, reply) =>

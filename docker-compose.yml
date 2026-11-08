@@ -7,10 +7,9 @@ services:
     environment:
       # Optional generic metadata fallback for stores that block local fetches.
       - IFRAMELY_API_KEY=${IFRAMELY_API_KEY:-}
+      - WEB_DIR=/frontend
     volumes:
       # En TrueNAS: cambia por la ruta de tu dataset, p. ej. /mnt/tank/apps/regalos
       - ./data:/data
-      # Build the frontend with `pnpm build` and copy dist/web into this directory.
-      - ./frontend:/frontend:ro
-    environment:
-      - WEB_DIR=/frontend
+      # The image seeds this directory on first start; later frontend builds replace its contents.
+      - ./frontend:/frontend

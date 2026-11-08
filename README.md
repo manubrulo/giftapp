@@ -21,7 +21,7 @@ The local [`docker-compose.yml`](docker-compose.yml) builds from the current sou
 
 ### Update the frontend without rebuilding the app image
 
-The server can serve static frontend files from a mounted directory. Set `WEB_DIR` to that directory (`/frontend` in the compose examples), then build locally with `pnpm build` and copy the contents of `dist/web` into the host directory mounted there. Keep the volume read-only in the container. The server reads files on each request, so replacing the files does not require a container restart. Upload the new `index.html` last so it does not point at assets that have not arrived yet. Keep the backend API compatible with the frontend version; API or database changes still require an app image update.
+The server serves static frontend files from a mounted directory. On first start, if that directory has no `index.html`, the container copies the frontend bundled in its image into it. This makes a fresh deployment self-contained and seeds the persistent host directory. For frontend-only updates, build locally with `pnpm build` and copy the contents of `dist/web` into the mounted directory; the server reads files on each request, so no container restart is needed. Replace assets first and `index.html` last. Keep the backend API compatible with the frontend version; API or database changes still require an app image update. The mounted directory must be writable by the container user (`568:568` on TrueNAS).
 
 1. Build and publish a Linux image to a container registry you control. For GitHub Container Registry, from this project directory run (replace the username and choose a version tag):
 
