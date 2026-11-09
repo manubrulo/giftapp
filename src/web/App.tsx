@@ -28,7 +28,7 @@ export default function App() {
 }
 
 function Shell({ children }: { children: ReactNode }) {
-  return <main className="app-shell mx-auto flex min-h-screen max-w-5xl flex-col px-5 pb-6 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8"><div className="flex-1">{children}</div><footer className="pt-6 text-center text-xs opacity-60">Regalos · v{__APP_VERSION__}</footer></main>;
+  return <main className="app-shell mx-auto flex min-h-screen max-w-7xl flex-col px-5 pb-6 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-8"><div className="flex-1">{children}</div><footer className="pt-6 text-center text-xs opacity-60">Regalos · v{__APP_VERSION__}</footer></main>;
 }
 
 function Picker({ onLogin }: { onLogin: (p: Profile) => void }) {
@@ -162,7 +162,7 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando deseos…</p> : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
-      <div className="wishlist-grid grid gap-4 sm:grid-cols-2">{items.map(item => <article key={item.id} className="item-card overflow-hidden rounded-2xl bg-moss">
+      <div className="wishlist-grid grid gap-4">{items.map(item => <article key={item.id} className="item-card rounded-2xl bg-moss">
         <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
       </article>)}</div>}
     {editing !== false && <ItemEditor item={editing} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />}
