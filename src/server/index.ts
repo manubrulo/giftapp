@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
-import { importImageFromUrl, scrapeProduct } from './scrape.js';
+import { importImageFromUrl, saveUploadedImage, scrapeProduct } from './scrape.js';
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
@@ -31,6 +31,12 @@ const checkPin = (pin: string, stored: string) => {
 
 // Bloqueo simple: 5 fallos => 1 minuto.
 const locks = new Map<number, { n: number; until: number }>();
+const parsePriceInput = (value: unknown): number | null => {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'number') return value;
+  if (typeof value !== 'string' || !/^\d+(?:[.,]\d+)?$/.test(value.trim())) return NaN;
+  return Number(value.trim().replace(',', '.'));
+};
 
 type Profile = { id: number; name: string; avatar: string; pin_hash: string | null; role: 'member' | 'admin' };
 const publicProfile = (p: Profile) => ({ id: p.id, name: p.name, avatar: p.avatar, hasPin: !!p.pin_hash, role: p.role });
@@ -87,7 +93,7 @@ const itemFields = (input: ItemInput, partial = false) => {
   const notes = text(input.notes, 2000, 'Las notas');
   const category = text(input.category, 60, 'La categoría');
   const currency = (text(input.currency, 3, 'La moneda') ?? 'EUR').toUpperCase();
-  const price = input.price === undefined && partial ? null : input.price === '' || input.price == null ? null : Number(input.price);
+  const price = input.price === undefined && partial ? null : parsePriceInput(input.price);
   if (price !== null && (!Number.isFinite(price) || price < 0 || price > 1_000_000_000)) errors.push('El precio no es válido');
   const rating = input.rating === undefined && partial ? null : input.rating == null || input.rating === '' ? 3 : Number(input.rating);
   if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 5)) errors.push('La valoración debe estar entre 1 y 5');
@@ -352,6 +358,22 @@ export async function buildApp() {
     }
   });
 
+  app.post('/api/images/upload', { bodyLimit: 9 * 1024 * 1024 }, async (req, reply) => {
+    if (!requireProfile(req, reply)) return;
+    const body = req.body as any;
+    if (typeof body?.data !== 'string' || body.data.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) {
+      return reply.code(400).send({ error: 'Selecciona una imagen de hasta 6 MB' });
+    }
+    try {
+      const bytes = Buffer.from(body.data, 'base64');
+      if (bytes.toString('base64') !== body.data) throw new Error('Invalid base64');
+      const imagePath = await saveUploadedImage(bytes, IMAGE_DIR, typeof body.type === 'string' ? body.type : '');
+      return reply.code(201).send({ imagePath });
+    } catch {
+      return reply.code(400).send({ error: 'La imagen debe ser JPEG, PNG, WebP, GIF o AVIF y no superar 6 MB.' });
+    }
+  });
+
   app.get('/api/items/mine', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
@@ -428,7 +450,7 @@ export async function buildApp() {
     const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : null;
     const url = typeof body.url === 'string' ? body.url.trim().slice(0, 2048) : null;
     const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : null;
-    const price = body.price == null || body.price === '' ? null : Number(body.price);
+    const price = parsePriceInput(body.price);
     if (!url && !title) return reply.code(400).send({ error: 'Añade un enlace o un título' });
     if (url) { try { if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error(); } catch { return reply.code(400).send({ error: 'El enlace debe empezar por http o https' }); } }
     if (price !== null && (!Number.isFinite(price) || price < 0)) return reply.code(400).send({ error: 'El precio no es válido' });
@@ -450,7 +472,7 @@ export async function buildApp() {
     const title = body.title === undefined ? existing.title : typeof body.title === 'string' ? body.title.trim().slice(0, 200) || null : null;
     const url = body.url === undefined ? existing.url : typeof body.url === 'string' ? body.url.trim().slice(0, 2048) || null : null;
     const note = body.note === undefined ? existing.note : typeof body.note === 'string' ? body.note.trim().slice(0, 500) || null : null;
-    const price = body.price === undefined ? existing.price : body.price == null || body.price === '' ? null : Number(body.price);
+    const price = body.price === undefined ? existing.price : parsePriceInput(body.price);
     const imagePath = body.imagePath === undefined ? existing.image_path : typeof body.imagePath === 'string' ? body.imagePath.trim().slice(0, 500) || null : null;
     if (!url && !title) return reply.code(400).send({ error: 'Añade un enlace o un título' });
     if (url) { try { if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error(); } catch { return reply.code(400).send({ error: 'El enlace debe empezar por http o https' }); } }

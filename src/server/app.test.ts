@@ -161,6 +161,20 @@ test('saves a wishlist link with an image when the page has no title or price', 
   assert.equal(response.json().price, null);
 });
 
+test('accepts comma decimals for item and alternative prices and rejects malformed values', async () => {
+  alice = await profile('Precios');
+  const created = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: alice.cookie }, payload: { title: 'Vela', price: '2,5' } });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().price, 2.5);
+  const updated = await app.inject({ method: 'PUT', url: `/api/items/${created.json().id}`, headers: { cookie: alice.cookie }, payload: { price: '2.5' } });
+  assert.equal(updated.json().price, 2.5);
+  const alternative = await app.inject({ method: 'POST', url: `/api/items/${created.json().id}/alternatives`, headers: { cookie: alice.cookie }, payload: { title: 'Roja', price: '3,75' } });
+  assert.equal(alternative.statusCode, 201, alternative.body);
+  assert.equal(alternative.json().price, 3.75);
+  const malformed = await app.inject({ method: 'PUT', url: `/api/items/${created.json().id}`, headers: { cookie: alice.cookie }, payload: { price: '1.234,56' } });
+  assert.equal(malformed.statusCode, 400);
+});
+
 test('bulk-deletes selected wishes only from the signed-in profile', async () => {
   alice = await profile('Selección');
   bob = await profile('Otra lista');
@@ -187,6 +201,18 @@ test('manual image URL import requires a session and rejects private targets', a
   alice = await profile('Imagen URL');
   const privateTarget = await app.inject({ method: 'POST', url: '/api/images/import', headers: { cookie: alice.cookie }, payload: { url: 'http://127.0.0.1/image.png' } });
   assert.equal(privateTarget.statusCode, 400);
+});
+
+test('image uploads require a session and save supported image bytes locally', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const data = png.toString('base64');
+  assert.equal((await app.inject({ method: 'POST', url: '/api/images/upload', payload: { type: 'image/png', data } })).statusCode, 401);
+  alice = await profile('Subida');
+  const uploaded = await app.inject({ method: 'POST', url: '/api/images/upload', headers: { cookie: alice.cookie }, payload: { type: 'image/png', data } });
+  assert.equal(uploaded.statusCode, 201, uploaded.body);
+  assert.match(uploaded.json().imagePath, /^\/images\/[a-f0-9]{32}\.png$/);
+  const unsupported = await app.inject({ method: 'POST', url: '/api/images/upload', headers: { cookie: alice.cookie }, payload: { type: 'image/png', data: Buffer.from('not image').toString('base64') } });
+  assert.equal(unsupported.statusCode, 400);
 });
 
 test('scraper rejects private targets and rechecks redirect destinations before making the next request', async () => {

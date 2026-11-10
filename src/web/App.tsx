@@ -18,6 +18,38 @@ const btn = 'rounded-xl px-4 py-3 font-semibold active:scale-[.98] focus-visible
 const primary = `${btn} bg-ribbon text-white`;
 const input = 'w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base focus-visible:outline-2 focus-visible:outline-ribbon';
 const blankDraft = (): ItemDraft => ({ title: '', url: '', imagePath: '', price: '', currency: 'EUR', rating: 3, notes: '', category: '' });
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+
+async function fitImageForUpload(file: File): Promise<File> {
+  if (file.size <= MAX_IMAGE_BYTES) return file;
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement('canvas');
+    const initialScale = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height));
+    let scale = initialScale;
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('No pudimos preparar la imagen');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const quality = attempt < 4 ? 0.9 - attempt * 0.08 : 0.82;
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+      if (!blob) throw new Error('No pudimos preparar la imagen');
+      if (blob.size <= MAX_IMAGE_BYTES) {
+        const extension = blob.type === 'image/webp' ? 'webp' : blob.type === 'image/jpeg' ? 'jpg' : 'png';
+        return new File([blob], `imagen.${extension}`, { type: blob.type });
+      }
+      scale *= 0.8;
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    }
+    throw new Error('La imagen sigue siendo demasiado grande. Prueba con una imagen más pequeña.');
+  } finally {
+    bitmap.close();
+  }
+}
 
 export default function App() {
   const [me, setMe] = useState<Profile | null | undefined>(undefined);
@@ -264,7 +296,7 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
   const myClaim = !ownList && item.reservedBy?.id === me.id;
   const addAlternative = async (event: FormEvent) => {
     event.preventDefault(); setLocalError('');
-    const payload = { url: altUrl, title: altTitle, price: altPrice === '' ? null : Number(altPrice), note: altNote };
+    const payload = { url: altUrl, title: altTitle, price: altPrice.trim() === '' ? null : altPrice, note: altNote };
     try {
       if (editingAlt) await api(`/alternatives/${editingAlt.id}`, payload, 'PUT');
       else await api(`/items/${item.id}/alternatives`, payload);
@@ -289,7 +321,7 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
       {item.alternatives.length > 0 && <div className="mt-4 border-t border-ink/15 pt-3"><p className="mb-2 font-semibold">También me valen</p><ul className="space-y-2">{item.alternatives.map(alt => <li key={alt.id} className="flex items-start justify-between gap-2 text-sm"><div>{alt.url ? <a className="underline" href={alt.url} target="_blank" rel="noreferrer">{alt.title || alt.url}</a> : <span>{alt.title}</span>}{alt.price != null && <span className="ml-2 font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(alt.price)}</span>}{alt.note && <p className="opacity-70">{alt.note}</p>}</div>{ownList && <div className="flex gap-2"><button className="text-ink underline" onClick={() => { setEditingAlt(alt); setAltUrl(alt.url ?? ''); setAltTitle(alt.title ?? ''); setAltPrice(alt.price == null ? '' : String(alt.price)); setAltNote(alt.note ?? ''); setAltOpen(true); }}>Editar</button><button className="text-ribbon" onClick={() => removeAlternative(alt)} aria-label={`Quitar ${alt.title || 'alternativa'}`}>×</button></div>}</li>)}</ul></div>}
       {ownList ? !selectionMode && <div className="item-card-actions mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="reservation-row mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
         {item.reservedBy ? myClaim ? <button className={`${btn} bg-moss`} onClick={onCancelClaim}>Quitar mi reserva</button> : null : <button className={primary} onClick={onClaim}>Lo compro</button>}</div>}
-      {altOpen && <form onSubmit={addAlternative} className="mt-4 space-y-2 rounded-xl bg-paper p-3"><p className="font-semibold">{editingAlt ? 'Editar alternativa' : 'Añadir alternativa'}</p><input className={input} placeholder="Enlace" type="url" value={altUrl} onChange={e => setAltUrl(e.target.value)} /><input className={input} placeholder="Nombre (opcional)" value={altTitle} onChange={e => setAltTitle(e.target.value)} /><input className={input} placeholder="Precio (opcional)" type="number" min="0" step="0.01" value={altPrice} onChange={e => setAltPrice(e.target.value)} /><input className={input} placeholder="Nota (opcional)" value={altNote} onChange={e => setAltNote(e.target.value)} />{localError && <p role="alert" className="text-sm text-ribbon">{localError}</p>}<button className={`${btn} bg-ink text-white`}>{editingAlt ? 'Guardar cambios' : 'Guardar alternativa'}</button></form>}
+      {altOpen && <form onSubmit={addAlternative} className="mt-4 space-y-2 rounded-xl bg-paper p-3"><p className="font-semibold">{editingAlt ? 'Editar alternativa' : 'Añadir alternativa'}</p><input className={input} placeholder="Enlace" type="url" value={altUrl} onChange={e => setAltUrl(e.target.value)} /><input className={input} placeholder="Nombre (opcional)" value={altTitle} onChange={e => setAltTitle(e.target.value)} /><input className={input} placeholder="Precio (opcional)" type="text" inputMode="decimal" value={altPrice} onChange={e => setAltPrice(e.target.value)} /><input className={input} placeholder="Nota (opcional)" value={altNote} onChange={e => setAltNote(e.target.value)} />{localError && <p role="alert" className="text-sm text-ribbon">{localError}</p>}<button className={`${btn} bg-ink text-white`}>{editingAlt ? 'Guardar cambios' : 'Guardar alternativa'}</button></form>}
       {localError && !altOpen && <p role="alert" className="mt-2 text-sm text-ribbon">{localError}</p>}
     </div>
   </>;
@@ -304,6 +336,9 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   const [saving, setSaving] = useState(false);
   const [imageUrl, setImageUrl] = useState('');
   const [importingImage, setImportingImage] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imagePaneOpen, setImagePaneOpen] = useState(false);
+  const [imageDragOver, setImageDragOver] = useState(false);
   const [error, setError] = useState('');
   const [scrapeNotice, setScrapeNotice] = useState('');
   const set = (key: keyof ItemDraft, value: string | number) => setDraft(d => ({ ...d, [key]: value }));
@@ -322,38 +357,69 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       const result = await api<{ imagePath: string }>('/images/import', { url: imageUrl });
       set('imagePath', result.imagePath);
       setImageUrl('');
+      setImagePaneOpen(false);
       setScrapeNotice('Miniatura importada.');
     } catch (e) { setError(errorText(e)); }
     finally { setImportingImage(false); }
   };
+  const uploadImage = async (file: File) => {
+    setError('');
+    if (!file.type.startsWith('image/')) { setError('Selecciona un archivo de imagen.'); return; }
+    setUploadingImage(true);
+    try {
+      const preparedFile = await fitImageForUpload(file);
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('No pudimos leer la imagen'));
+        reader.onerror = () => reject(new Error('No pudimos leer la imagen'));
+        reader.readAsDataURL(preparedFile);
+      });
+      const result = await api<{ imagePath: string }>('/images/upload', { type: preparedFile.type, data: dataUrl.split(',')[1] });
+      set('imagePath', result.imagePath);
+      setImagePaneOpen(false);
+      setScrapeNotice('Miniatura importada.');
+    } catch (e) { setError(errorText(e)); }
+    finally { setUploadingImage(false); }
+  };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError('');
-    const payload = { ...draft, price: draft.price === '' ? null : Number(draft.price), imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null, category: draft.category || null };
+    const payload = { ...draft, price: draft.price.trim() === '' ? null : draft.price, imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null, category: draft.category || null };
     try { if (item) await api(`/items/${item.id}`, payload, 'PUT'); else await api('/items', payload); onSaved(); }
     catch (e) { setError(errorText(e)); }
     finally { setSaving(false); }
   };
   return <div className="fixed inset-0 z-10 overflow-y-auto bg-ink/50 p-4" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="editor-title" className="modal-panel mx-auto my-5 max-w-xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
-      <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
+      <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{imagePaneOpen ? 'Añadir imagen' : item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
+      {imagePaneOpen ? <div className="space-y-4">
+        <div onDragOver={e => { e.preventDefault(); setImageDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setImageDragOver(false); }} onDrop={e => { e.preventDefault(); setImageDragOver(false); const file = Array.from(e.dataTransfer.files).find(candidate => candidate.type.startsWith('image/')); if (file) void uploadImage(file); }} className={`rounded-2xl border-2 border-dashed p-6 text-center transition-colors sm:p-8 ${imageDragOver ? 'border-ribbon bg-ribbon/10' : 'border-ink/30 bg-white/40'}`}>
+          <p className="mb-4 text-lg font-semibold">Arrastra aquí la foto</p>
+          <label className={`${btn} inline-flex cursor-pointer items-center bg-moss`}>
+            {uploadingImage ? 'Subiendo…' : 'Seleccionar foto'}
+            <input className="sr-only" type="file" accept="image/*" disabled={uploadingImage} onChange={e => { const file = e.currentTarget.files?.[0]; if (file) void uploadImage(file); e.currentTarget.value = ''; }} />
+          </label>
+          <p className="mt-3 text-sm opacity-70">En el móvil puedes elegir una foto o tomarla con la cámara. Las imágenes grandes se reducen automáticamente.</p>
+        </div>
+        <label className="block space-y-1"><span className="font-semibold">Pega una URL o una imagen</span><textarea className={input} rows={3} placeholder="Pega aquí el enlace de la imagen o usa Ctrl/Cmd+V para pegarla" value={imageUrl} onChange={e => setImageUrl(e.target.value)} onPaste={e => { const file = Array.from(e.clipboardData.files).find(candidate => candidate.type.startsWith('image/')) ?? Array.from(e.clipboardData.items).find(item => item.type.startsWith('image/'))?.getAsFile(); if (file) { e.preventDefault(); void uploadImage(file); } }} />
+          <span className="block text-sm opacity-70">Pega el enlace directo de una imagen o una imagen copiada.</span></label>
+        <div className="flex flex-wrap gap-3"><button type="button" className={`${btn} bg-moss`} disabled={!imageUrl.trim() || importingImage || uploadingImage} onClick={importImage}>{importingImage ? 'Importando…' : 'Importar desde URL'}</button><button type="button" className={`${btn} bg-paper`} onClick={() => { setImagePaneOpen(false); setImageUrl(''); }}>Volver al deseo</button></div>
+        {error && <p role="alert" className="rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
+      </div> : <>
       {!item && <div className="editor-url-row mb-4 flex gap-2"><input className={input} type="url" placeholder="Pega el enlace del producto" value={draft.url} onChange={e => set('url', e.target.value)} /><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Buscar'}</button></div>}
       {scrapeNotice && <p role="status" className="mb-4 rounded-xl border border-amber-700/20 bg-amber-100 p-3 text-sm text-amber-950">{scrapeNotice}</p>}
-      {draft.imagePath && <img src={appAssetUrl(draft.imagePath)} alt="Vista previa del producto" className="mb-4 h-40 w-full rounded-xl bg-white object-contain p-2" />}
-      <div className="mb-4 space-y-2">
-        <label className="block space-y-1"><span className="font-semibold">Miniatura (opcional)</span><input className={input} type="url" placeholder="Pega la URL directa de una imagen" value={imageUrl} onChange={e => setImageUrl(e.target.value)} /></label>
-        <p className="text-sm opacity-70">Pega el enlace directo de la imagen; si copias el HTML, usa el valor de <code>src</code>.</p>
-        <button type="button" className={`${btn} bg-moss`} disabled={!imageUrl.trim() || importingImage} onClick={importImage}>{importingImage ? 'Importando…' : 'Importar imagen'}</button>
-      </div>
+      {draft.imagePath && <img src={appAssetUrl(draft.imagePath)} alt="Vista previa del producto" className="mb-3 h-40 w-full rounded-xl bg-white object-contain p-2" />}
+      <button type="button" className={`${btn} mb-4 bg-moss`} onClick={() => { setError(''); setImagePaneOpen(true); }}>{draft.imagePath ? 'Cambiar imagen' : 'Añadir imagen'}</button>
       <form onSubmit={save} className="space-y-3">
         <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
         {item && <div className="editor-url-row flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
-        <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="number" min="0" step="0.01" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
+        <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
         <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} placeholder="Por ejemplo: libros" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /></label>
         <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>
         <label className="block space-y-1"><span className="font-semibold">Notas</span><textarea className={input} rows={3} value={draft.notes} onChange={e => set('notes', e.target.value)} maxLength={2000} /></label>
         {error && <p role="alert" className="rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
         <div className="flex gap-3 pt-2"><button type="button" className={`${btn} bg-moss`} onClick={onClose}>Cancelar</button><button className={`${primary} flex-1`} disabled={saving || (!draft.title.trim() && !draft.url.trim())}>{saving ? 'Guardando…' : 'Guardar deseo'}</button></div>
       </form>
+      </>}
     </section>
   </div>;
 }

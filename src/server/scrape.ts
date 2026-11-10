@@ -495,6 +495,14 @@ export function verifiedImageType(contentType: string, body: Buffer): string | n
   return type === detected ? detected : null;
 }
 
+export async function saveUploadedImage(body: Buffer, imageDir: string, contentType = '') {
+  const type = verifiedImageType(contentType, body);
+  if (!type || body.length === 0 || body.length > IMAGE_LIMIT) throw new Error('Unsupported or oversized image');
+  const filename = `${randomBytes(16).toString('hex')}${extensionFor(type, new URL('https://upload.invalid/image'))}`;
+  await writeFile(path.join(imageDir, filename), body, { flag: 'wx' });
+  return `/images/${filename}`;
+}
+
 export async function importImageFromUrl(rawUrl: string, imageDir: string, userAgent?: string, fetchImage: typeof safeGet = safeGet) {
   const imageUrl = normalizeProductUrl(rawUrl);
   const response = await fetchImage(imageUrl.toString(), IMAGE_LIMIT, resolvePublic, requestOnce, userAgent, {
