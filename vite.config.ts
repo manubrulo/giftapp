@@ -11,6 +11,6 @@ export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
   define: { __APP_VERSION__: JSON.stringify(appVersion) },
-  server: { proxy: { '/api': 'http://localhost:3000' } },
+  server: { proxy: { '/api/': 'http://localhost:3000' } },
   build: { outDir: '../../dist/web', emptyOutDir: true },
 });

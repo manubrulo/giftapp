@@ -5,6 +5,7 @@ declare const __APP_VERSION__: string;
 
 type Profile = { id: number; name: string; avatar: string; hasPin: boolean; role: 'member' | 'admin' };
 type AdminProfile = Profile & { itemCount: number; createdAt?: string };
+type Family = { id: number; name: string; profileIds: number[] };
 type Notice = { id: number; itemTitle: string; deletedBy: string; createdAt: string };
 type Alternative = { id: number; url: string | null; title: string | null; price: number | null; imagePath: string | null; note: string | null };
 type Item = {
@@ -119,24 +120,22 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
   const [reload, setReload] = useState(0);
   const ownList = viewingId === me.id;
   const viewing = profiles.find(p => p.id === viewingId) ?? me;
-  useEffect(() => { api<Profile[]>('/profiles').then(setProfiles).catch(() => setError('No pudimos cargar los perfiles')); }, []);
+  const refreshProfiles = () => api<Profile[]>('/profiles/visible').then(data => {
+    setProfiles(data);
+    if (!data.some(profile => profile.id === viewingId)) setViewingId(me.id);
+  }).catch(() => setError('No pudimos cargar los perfiles'));
+  useEffect(() => { void refreshProfiles(); }, []);
   useEffect(() => {
     let live = true;
-    const loadNotices = () => api<Notice[]>('/notifications').then(data => { if (live) setNotices(data); }).catch(() => {});
-    loadNotices();
-    const interval = window.setInterval(loadNotices, 10000);
-    window.addEventListener('focus', loadNotices);
-    return () => { live = false; window.clearInterval(interval); window.removeEventListener('focus', loadNotices); };
+    api<Notice[]>('/notifications').then(data => { if (live) setNotices(data); }).catch(() => {});
+    return () => { live = false; };
   }, []);
   useEffect(() => {
     let live = true;
     setBusy(true); setError('');
     const route = ownList ? '/items/mine' : `/profiles/${viewingId}/items`;
     api<Item[]>(route).then(data => { if (live) setItems(data); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') setReload(n => n + 1);
-    }, 15000);
-    return () => { live = false; window.clearInterval(interval); };
+    return () => { live = false; };
   }, [ownList, viewingId, reload]);
   useEffect(() => {
     setSelectionMode(false);
@@ -144,6 +143,11 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
   }, [viewingId]);
   useEffect(() => setSelectedIds(ids => ids.filter(id => items.some(item => item.id === id))), [items]);
   const refresh = () => setReload(n => n + 1);
+  const refreshAll = () => {
+    refresh();
+    void refreshProfiles();
+    void api<Notice[]>('/notifications').then(setNotices).catch(() => {});
+  };
   const removeItem = async (item: Item) => {
     if (!window.confirm(`¿Borrar «${item.title}»?`)) return;
     try { await api(`/items/${item.id}`, undefined, 'DELETE'); refresh(); } catch (e) { setError(errorText(e)); }
@@ -181,7 +185,8 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
       {profiles.filter(p => p.id !== me.id).map(p => <button key={p.id} onClick={() => setViewingId(p.id)} aria-pressed={viewingId === p.id} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${viewingId === p.id ? 'bg-ink text-white' : 'bg-moss'}`}>{p.avatar} {p.name}</button>)}
     </nav>
     <div className="home-summary mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
-      {ownList && <div className="home-list-actions flex flex-wrap gap-2">
+      <div className="home-list-actions flex flex-wrap gap-2"><button type="button" className={`${btn} bg-moss`} onClick={refreshAll} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button>
+      {ownList && <>
         {selectionMode ? <>
           <button className={`${btn} bg-moss`} onClick={() => { setSelectionMode(false); setSelectedIds([]); }}>Cancelar</button>
           <button className={`${btn} bg-moss`} onClick={() => setSelectedIds(selectedIds.length === items.length ? [] : items.map(item => item.id))}>{selectedIds.length === items.length ? 'Quitar selección' : 'Seleccionar todo'}</button>
@@ -190,7 +195,8 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
           <button className={`${btn} bg-moss`} onClick={() => setSelectionMode(true)} disabled={!items.length}>Seleccionar</button>
           <button className={primary} onClick={() => setEditing(null)}>＋ Añadir deseo</button>
         </>}
-      </div>}
+      </>}
+      </div>
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando deseos…</p> : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
@@ -198,7 +204,7 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
         <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
       </article>)}</div>}
     {editing !== false && <ItemEditor item={editing} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />}
-    {settingsOpen && <SettingsDialog me={me} onClose={() => setSettingsOpen(false)} onMeUpdated={onMeUpdated} onProfilesChanged={() => api<Profile[]>('/profiles').then(setProfiles)} />}
+    {settingsOpen && <SettingsDialog me={me} onClose={() => setSettingsOpen(false)} onMeUpdated={onMeUpdated} onProfilesChanged={() => { void refreshProfiles(); }} />}
   </Shell>;
 }
 
@@ -213,7 +219,9 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [adminProfiles, setAdminProfiles] = useState<AdminProfile[]>([]);
+  const [families, setFamilies] = useState<Family[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
+  const [adminSection, setAdminSection] = useState<'users' | 'families'>('users');
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError(''); setNotice('');
     try {
@@ -224,14 +232,29 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
   };
   const loadAdmins = async () => {
     setAdminLoading(true); setError('');
-    try { setAdminProfiles(await api<AdminProfile[]>('/admin/profiles')); }
+    try {
+      const [profiles, currentFamilies] = await Promise.all([api<AdminProfile[]>('/admin/profiles'), api<Family[]>('/admin/families')]);
+      setAdminProfiles(profiles); setFamilies(currentFamilies);
+    }
     catch (e) { setError(errorText(e)); }
     finally { setAdminLoading(false); }
   };
+  const reloadFamilies = async () => { await loadAdmins(); onProfilesChanged(); };
   useEffect(() => { if (me.role === 'admin') void loadAdmins(); }, [me.role]);
   const updateAdminProfile = async (profileId: number, changes: Record<string, unknown>) => {
     try {
-      await api(`/admin/profiles/${profileId}`, changes, 'PUT');
+      const { familyIds, ...profileChanges } = changes;
+      await api(`/admin/profiles/${profileId}`, profileChanges, 'PUT');
+      if (Array.isArray(familyIds)) {
+        for (const family of families) {
+          const profileIds = familyIds.includes(family.id)
+            ? [...new Set([...family.profileIds, profileId])]
+            : family.profileIds.filter(id => id !== profileId);
+          if (profileIds.length !== family.profileIds.length || profileIds.some((id, index) => id !== family.profileIds[index])) {
+            await api(`/admin/families/${family.id}`, { profileIds }, 'PUT');
+          }
+        }
+      }
       await loadAdmins(); onProfilesChanged();
       if (profileId === me.id) {
         const updated = await api<{ me: Profile }>('/me');
@@ -257,27 +280,82 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
         <button className={primary} disabled={saving}>{saving ? 'Guardando…' : 'Guardar perfil'}</button>
       </form>
       {me.role === 'admin' && <section className="mt-8 border-t border-ink/15 pt-6">
-        <div className="mb-3"><h3 className="text-lg font-bold">Administrar perfiles</h3><p className="text-sm opacity-70">Cambia nombres, PIN y permisos, o elimina perfiles.</p></div>
-        {adminLoading ? <p role="status">Cargando perfiles…</p> : <div className="space-y-3">{adminProfiles.map(profile => <AdminProfileRow key={profile.id} profile={profile} self={profile.id === me.id} onSave={changes => updateAdminProfile(profile.id, changes)} onDelete={() => removeProfile(profile)} />)}</div>}
+        <nav aria-label="Administración" className="mb-5 flex gap-2 border-b border-ink/15">
+          <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${adminSection === 'users' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={adminSection === 'users'} onClick={() => setAdminSection('users')}>Usuarios</button>
+          <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${adminSection === 'families' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={adminSection === 'families'} onClick={() => setAdminSection('families')}>Familias</button>
+        </nav>
+        {adminLoading ? <p role="status">Cargando…</p> : adminSection === 'users' ? <section aria-labelledby="users-section-title">
+          <div className="mb-3"><h3 id="users-section-title" className="text-lg font-bold">Administrar usuarios</h3><p className="text-sm opacity-70">Gestiona perfiles y asigna cada usuario a una o más familias.</p></div>
+          <div className="space-y-3">{adminProfiles.map(profile => <AdminProfileRow key={profile.id} profile={profile} families={families} self={profile.id === me.id} onSave={changes => updateAdminProfile(profile.id, changes)} onDelete={() => removeProfile(profile)} />)}</div>
+        </section> : <section aria-labelledby="families-section-title">
+          <div className="mb-3"><h3 id="families-section-title" className="text-lg font-bold">Administrar familias</h3><p className="text-sm opacity-70">Cada perfil solo puede ver las listas de perfiles que comparten al menos una familia.</p></div>
+          <FamilyManager families={families} profiles={adminProfiles} onChanged={reloadFamilies} onError={setError} />
+        </section>}
       </section>}
       {error && <p role="alert" className="mt-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     </section>
   </div>;
 }
 
-function AdminProfileRow({ profile, self, onSave, onDelete }: {
-  profile: AdminProfile; self: boolean; onSave: (changes: Record<string, unknown>) => void; onDelete: () => void;
+function FamilyManager({ families, profiles, onChanged, onError }: {
+  families: Family[]; profiles: AdminProfile[]; onChanged: () => Promise<void>; onError: (message: string) => void;
+}) {
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const createFamily = async (event: FormEvent) => {
+    event.preventDefault(); onError(''); setSaving(true);
+    try { await api('/admin/families', { name: newName }); setNewName(''); await onChanged(); }
+    catch (error) { onError(errorText(error)); }
+    finally { setSaving(false); }
+  };
+  const deleteFamily = async (family: Family) => {
+    if (!window.confirm(`¿Eliminar «${family.name}»? Los perfiles y sus deseos se conservarán. Quienes no pertenezcan a otra familia solo podrán ver su propia lista hasta que se les asigne de nuevo.`)) return;
+    onError('');
+    try { await api(`/admin/families/${family.id}`, undefined, 'DELETE'); await onChanged(); }
+    catch (error) { onError(errorText(error)); }
+  };
+  return <div className="space-y-4">
+    <form onSubmit={createFamily} className="flex flex-wrap gap-2"><input className={`${input} min-w-48 flex-1`} aria-label="Nombre de la nueva familia" placeholder="Nombre de la familia" value={newName} onChange={event => setNewName(event.target.value)} maxLength={60} required /><button className={primary} disabled={saving}>{saving ? 'Creando…' : '＋ Crear familia'}</button></form>
+    {families.length === 0 && <p className="text-sm opacity-70">Todavía no hay familias. Los perfiles sin familia solo ven su propia lista.</p>}
+    {families.map(family => <FamilyRow key={family.id} family={family} profiles={profiles} onChanged={onChanged} onError={onError} onDelete={() => deleteFamily(family)} />)}
+  </div>;
+}
+
+function FamilyRow({ family, profiles, onChanged, onError, onDelete }: {
+  family: Family; profiles: AdminProfile[]; onChanged: () => Promise<void>; onError: (message: string) => void; onDelete: () => void;
+}) {
+  const [name, setName] = useState(family.name);
+  const [profileIds, setProfileIds] = useState(family.profileIds);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setName(family.name); setProfileIds(family.profileIds); }, [family]);
+  const save = async (event: FormEvent) => {
+    event.preventDefault(); onError(''); setSaving(true);
+    try { await api(`/admin/families/${family.id}`, { name, profileIds }, 'PUT'); await onChanged(); }
+    catch (error) { onError(errorText(error)); }
+    finally { setSaving(false); }
+  };
+  return <form onSubmit={save} className="rounded-xl border border-ink/15 p-3">
+    <div className="flex flex-wrap items-center gap-2"><input className={`${input} min-w-48 flex-1`} aria-label={`Nombre de ${family.name}`} value={name} onChange={event => setName(event.target.value)} maxLength={60} required /><button className={`${btn} bg-moss`} disabled={saving}>{saving ? 'Guardando…' : 'Guardar familia'}</button><button type="button" className="px-2 text-sm text-ribbon underline" onClick={onDelete}>Eliminar</button></div>
+    <fieldset className="mt-3"><legend className="mb-2 text-sm font-semibold">Miembros</legend><div className="grid gap-2 sm:grid-cols-2">{profiles.map(profile => <label key={profile.id} className="flex items-center gap-2 rounded-lg bg-white/70 px-3 py-2"><input type="checkbox" checked={profileIds.includes(profile.id)} onChange={event => setProfileIds(ids => event.target.checked ? [...ids, profile.id] : ids.filter(id => id !== profile.id))} />{profile.avatar} {profile.name}</label>)}</div></fieldset>
+  </form>;
+}
+
+function AdminProfileRow({ profile, families, self, onSave, onDelete }: {
+  profile: AdminProfile; families: Family[]; self: boolean; onSave: (changes: Record<string, unknown>) => void; onDelete: () => void;
 }) {
   const [name, setName] = useState(profile.name);
   const [avatar, setAvatar] = useState(profile.avatar);
   const [role, setRole] = useState(profile.role);
   const [pin, setPin] = useState('');
   const [clearPin, setClearPin] = useState(false);
+  const [familyIds, setFamilyIds] = useState<number[]>(families.filter(family => family.profileIds.includes(profile.id)).map(family => family.id));
   useEffect(() => { setName(profile.name); setAvatar(profile.avatar); setRole(profile.role); }, [profile]);
-  return <form className="rounded-xl border border-ink/15 p-3" onSubmit={e => { e.preventDefault(); onSave({ name, avatar, role, ...(clearPin ? { pin: null } : pin ? { pin } : {}) }); setPin(''); setClearPin(false); }}>
+  useEffect(() => { setFamilyIds(families.filter(family => family.profileIds.includes(profile.id)).map(family => family.id)); }, [families, profile.id]);
+  return <form className="rounded-xl border border-ink/15 p-3" onSubmit={e => { e.preventDefault(); onSave({ name, avatar, role, familyIds, ...(clearPin ? { pin: null } : pin ? { pin } : {}) }); setPin(''); setClearPin(false); }}>
       <div className="admin-row-heading mb-2 flex items-center justify-between gap-2"><span className="font-semibold">{profile.avatar} {profile.name} · {profile.itemCount} deseos</span>{!self && <button type="button" className="text-sm text-ribbon underline" onClick={onDelete}>Eliminar perfil</button>}</div>
     <div className="grid gap-2 sm:grid-cols-2"><input className={input} aria-label={`Nombre de ${profile.name}`} value={name} onChange={e => setName(e.target.value)} maxLength={30} required /><select className={input} aria-label={`Rol de ${profile.name}`} value={role} disabled={self} onChange={e => setRole(e.target.value as 'admin' | 'member')}><option value="member">Miembro</option><option value="admin">Administrador</option></select></div>
     <div className="mt-2 flex flex-wrap gap-2">{AVATARS.map(a => <button type="button" key={a} onClick={() => setAvatar(a)} aria-label={`Avatar ${a} para ${profile.name}`} aria-pressed={a === avatar} className={`size-9 rounded-lg text-xl ${a === avatar ? 'bg-ink text-white' : 'bg-moss'}`}>{a}</button>)}</div>
+    <fieldset className="mt-3"><legend className="mb-2 text-sm font-semibold">Familias</legend>{families.length ? <div className="flex flex-wrap gap-2">{families.map(family => <label key={family.id} className="flex items-center gap-2 rounded-lg bg-white/70 px-3 py-2 text-sm"><input type="checkbox" checked={familyIds.includes(family.id)} onChange={e => setFamilyIds(ids => e.target.checked ? [...ids, family.id] : ids.filter(id => id !== family.id))} />{family.name}</label>)}</div> : <p className="text-sm opacity-60">Aún no hay familias.</p>}</fieldset>
     <div className="mt-2 flex flex-wrap items-center gap-2"><input className={`${input} min-w-40 flex-1`} placeholder={profile.hasPin ? 'PIN nuevo (vacío = mantener)' : 'PIN opcional'} inputMode="numeric" type="password" value={pin} onChange={e => { setPin(e.target.value.replace(/\D/g, '').slice(0, 8)); setClearPin(false); }} />{profile.hasPin && <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={clearPin} onChange={e => { setClearPin(e.target.checked); setPin(''); }} /> Quitar PIN</label>}<button className={`${btn} bg-moss`}>Guardar</button></div>
   </form>;
 }
@@ -312,7 +390,7 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
     {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
     {item.imagePath && <div className="item-card-image"><img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" /></div>}
     <div className={`item-card-content p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
-      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <p className="mt-1 text-sm opacity-70">{item.category}</p>}</div>
+      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <span className="mt-2 inline-flex rounded-full bg-paper px-3 py-1 text-sm font-medium">{item.category}</span>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
       </div>
       {item.price != null && <p className="mt-3 text-lg font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(item.price)}</p>}
@@ -341,6 +419,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   const [imageDragOver, setImageDragOver] = useState(false);
   const [error, setError] = useState('');
   const [scrapeNotice, setScrapeNotice] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
+  useEffect(() => { api<string[]>('/categories').then(setCategories).catch(() => {}); }, []);
   const set = (key: keyof ItemDraft, value: string | number) => setDraft(d => ({ ...d, [key]: value }));
   const scrape = async () => {
     setError(''); setScrapeNotice(''); setScraping(true);
@@ -413,7 +493,7 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
         <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
         {item && <div className="editor-url-row flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
         <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
-        <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} placeholder="Por ejemplo: libros" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /></label>
+        <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} list="gift-category-options" placeholder="Elige una o escribe una nueva" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /><datalist id="gift-category-options">{categories.map(category => <option key={category} value={category} />)}</datalist></label>
         <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>
         <label className="block space-y-1"><span className="font-semibold">Notas</span><textarea className={input} rows={3} value={draft.notes} onChange={e => set('notes', e.target.value)} maxLength={2000} /></label>
         {error && <p role="alert" className="rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
