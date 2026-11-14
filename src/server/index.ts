@@ -69,6 +69,11 @@ const requireAdmin = (req: FastifyRequest, reply: FastifyReply): Profile | undef
   if (me && me.role !== 'admin') reply.code(403).send({ error: 'Solo un administrador puede hacer eso' });
   return me?.role === 'admin' ? me : undefined;
 };
+const profilesShareFamily = (firstProfileId: number, secondProfileId: number) => !!db.prepare(`
+  SELECT 1 FROM family_memberships mine
+  JOIN family_memberships theirs ON theirs.family_id = mine.family_id
+  WHERE mine.profile_id = ? AND theirs.profile_id = ? LIMIT 1
+`).get(firstProfileId, secondProfileId);
 
 type ItemInput = {
   title?: unknown; url?: unknown; imagePath?: unknown; price?: unknown; currency?: unknown;
@@ -154,6 +159,15 @@ export async function buildApp() {
 
   app.get('/api/profiles', async () =>
     (db.prepare('SELECT * FROM profiles ORDER BY name').all() as Profile[]).map(publicProfile));
+
+  app.get('/api/profiles/visible', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    return (db.prepare(`SELECT DISTINCT p.* FROM profiles p
+      LEFT JOIN family_memberships mine ON mine.profile_id = ?
+      LEFT JOIN family_memberships their ON their.family_id = mine.family_id AND their.profile_id = p.id
+      WHERE p.id = ? OR their.profile_id IS NOT NULL ORDER BY p.name`).all(me.id, me.id) as Profile[]).map(publicProfile);
+  });
 
   app.post('/api/profiles', async (req, reply) => {
     const { name, avatar, pin } = (req.body ?? {}) as any;
@@ -278,6 +292,72 @@ export async function buildApp() {
       FROM profiles p ORDER BY p.created_at, p.id`).all();
   });
 
+  app.get('/api/admin/families', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    return (db.prepare('SELECT id, name, created_at AS createdAt FROM families ORDER BY name COLLATE NOCASE, id').all() as Array<{ id: number; name: string; createdAt: string }>).map(family => ({
+      ...family,
+      profileIds: (db.prepare('SELECT profile_id FROM family_memberships WHERE family_id = ? ORDER BY profile_id').all(family.id) as Array<{ profile_id: number }>).map(row => row.profile_id),
+    }));
+  });
+
+  app.post('/api/admin/families', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const name = typeof (req.body as any)?.name === 'string' ? (req.body as any).name.trim() : '';
+    if (!name || name.length > 60) return reply.code(400).send({ error: 'El nombre de la familia debe tener entre 1 y 60 caracteres' });
+    try {
+      const result = db.prepare('INSERT INTO families (name) VALUES (?)').run(name);
+      return reply.code(201).send({ id: Number(result.lastInsertRowid), name, profileIds: [] });
+    } catch (error) {
+      if (isConstraintError(error)) return reply.code(409).send({ error: 'Ya existe una familia con ese nombre' });
+      throw error;
+    }
+  });
+
+  app.put('/api/admin/families/:familyId', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const id = positiveId((req.params as any).familyId);
+    if (id === null) return reply.code(400).send({ error: 'Familia no válida' });
+    const family = db.prepare('SELECT id, name FROM families WHERE id = ?').get(id) as { id: number; name: string } | undefined;
+    if (!family) return reply.code(404).send({ error: 'Familia no encontrada' });
+    const body = (req.body ?? {}) as any;
+    const name = body.name === undefined ? family.name : typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 60) return reply.code(400).send({ error: 'El nombre de la familia debe tener entre 1 y 60 caracteres' });
+    let profileIds: number[] | undefined;
+    if (body.profileIds !== undefined) {
+      if (!Array.isArray(body.profileIds) || body.profileIds.some((value: unknown) => !Number.isSafeInteger(value) || Number(value) <= 0)
+        || new Set(body.profileIds).size !== body.profileIds.length) return reply.code(400).send({ error: 'La lista de perfiles no es válida' });
+      const requestedProfileIds = body.profileIds as number[];
+      profileIds = requestedProfileIds;
+      const placeholders = requestedProfileIds.map(() => '?').join(', ');
+      const count = requestedProfileIds.length ? Number((db.prepare(`SELECT COUNT(*) AS n FROM profiles WHERE id IN (${placeholders})`).get(...requestedProfileIds) as any).n) : 0;
+      if (count !== requestedProfileIds.length) return reply.code(400).send({ error: 'Uno o más perfiles no existen' });
+    }
+    try {
+      const update = db.transaction(() => {
+        db.prepare('UPDATE families SET name = ? WHERE id = ?').run(name, id);
+        if (profileIds) {
+          db.prepare('DELETE FROM family_memberships WHERE family_id = ?').run(id);
+          const add = db.prepare('INSERT INTO family_memberships (family_id, profile_id) VALUES (?, ?)');
+          for (const profileId of profileIds) add.run(id, profileId);
+        }
+      });
+      update();
+    } catch (error) {
+      if (isConstraintError(error)) return reply.code(409).send({ error: 'Ya existe una familia con ese nombre' });
+      throw error;
+    }
+    return { id, name, profileIds: profileIds ?? (db.prepare('SELECT profile_id FROM family_memberships WHERE family_id = ? ORDER BY profile_id').all(id) as Array<{ profile_id: number }>).map(row => row.profile_id) };
+  });
+
+  app.delete('/api/admin/families/:familyId', async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    const id = positiveId((req.params as any).familyId);
+    if (id === null) return reply.code(400).send({ error: 'Familia no válida' });
+    const result = db.prepare('DELETE FROM families WHERE id = ?').run(id);
+    if (!result.changes) return reply.code(404).send({ error: 'Familia no encontrada' });
+    return { ok: true };
+  });
+
   app.put('/api/admin/profiles/:profileId', async (req, reply) => {
     const admin = requireAdmin(req, reply);
     if (!admin) return;
@@ -380,12 +460,18 @@ export async function buildApp() {
     return myItems(me.id);
   });
 
+  app.get('/api/categories', async (req, reply) => {
+    if (!requireProfile(req, reply)) return;
+    return (db.prepare("SELECT DISTINCT category FROM items WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category COLLATE NOCASE").all() as Array<{ category: string }>).map(row => row.category);
+  });
+
   app.get('/api/profiles/:profileId/items', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
     const profileId = positiveId((req.params as any).profileId);
     if (profileId === null) return reply.code(400).send({ error: 'Perfil no válido' });
     if (!db.prepare('SELECT id FROM profiles WHERE id = ?').get(profileId)) return reply.code(404).send({ error: 'Perfil no encontrado' });
+    if (me.id !== profileId && !profilesShareFamily(me.id, profileId)) return reply.code(404).send({ error: 'Lista no encontrada' });
     // Same-profile reads take the owner-only query path, with no claims access.
     return me.id === profileId ? myItems(profileId) : viewedItems(profileId);
   });
@@ -500,6 +586,7 @@ export async function buildApp() {
     const owner = db.prepare('SELECT profile_id FROM items WHERE id = ?').get(itemId) as { profile_id: number } | undefined;
     if (!owner) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     if (owner.profile_id === me.id) return reply.code(403).send({ error: 'No puedes reservar tu propio deseo' });
+    if (!profilesShareFamily(me.id, owner.profile_id)) return reply.code(404).send({ error: 'Deseo no encontrado' });
     try {
       db.prepare('INSERT INTO claims (item_id, profile_id) VALUES (?, ?)').run(itemId, me.id);
       return reply.code(201).send({ ok: true });
@@ -517,6 +604,7 @@ export async function buildApp() {
     const owner = db.prepare('SELECT profile_id FROM items WHERE id = ?').get(itemId) as { profile_id: number } | undefined;
     if (!owner) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     if (owner.profile_id === me.id) return reply.code(403).send({ error: 'No puedes cambiar la reserva de tu propio deseo' });
+    if (!profilesShareFamily(me.id, owner.profile_id)) return reply.code(404).send({ error: 'Deseo no encontrado' });
     const result = db.prepare('DELETE FROM claims WHERE item_id = ? AND profile_id = ?').run(itemId, me.id);
     if (!result.changes) return reply.code(404).send({ error: 'No tienes una reserva para este deseo' });
     return { ok: true };

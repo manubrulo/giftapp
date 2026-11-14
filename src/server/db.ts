@@ -17,6 +17,20 @@ CREATE TABLE IF NOT EXISTS profiles (
   role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS families (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS family_memberships (
+  family_id INTEGER NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  PRIMARY KEY (family_id, profile_id)
+);
+CREATE TABLE IF NOT EXISTS app_migrations (
+  name TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
@@ -68,4 +82,20 @@ if (!profileColumns.some(column => column.name === 'role')) {
 }
 if (!db.prepare("SELECT 1 FROM profiles WHERE role = 'admin' LIMIT 1").get()) {
   db.prepare("UPDATE profiles SET role = 'admin' WHERE id = (SELECT id FROM profiles ORDER BY created_at, id LIMIT 1)").run();
+}
+
+// Existing installations retain their previous household-wide visibility.
+// Profiles created after this one-time migration remain unassigned until an admin adds them.
+if (!db.prepare("SELECT 1 FROM app_migrations WHERE name = 'families_v1'").get()) {
+  const migrateFamilies = db.transaction(() => {
+    const existingProfiles = db.prepare('SELECT id FROM profiles ORDER BY created_at, id').all() as Array<{ id: number }>;
+    if (existingProfiles.length > 0) {
+      db.prepare("INSERT OR IGNORE INTO families (name) VALUES ('Familia')").run();
+      const family = db.prepare("SELECT id FROM families WHERE name = 'Familia'").get() as { id: number };
+      const addMembership = db.prepare('INSERT OR IGNORE INTO family_memberships (family_id, profile_id) VALUES (?, ?)');
+      for (const profile of existingProfiles) addMembership.run(family.id, profile.id);
+    }
+    db.prepare("INSERT INTO app_migrations (name) VALUES ('families_v1')").run();
+  });
+  migrateFamilies();
 }

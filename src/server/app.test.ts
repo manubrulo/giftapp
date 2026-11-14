@@ -13,14 +13,20 @@ let alice: { id: number; cookie: string };
 let bob: { id: number; cookie: string };
 
 before(async () => { await app.ready(); });
-beforeEach(() => db.exec('DELETE FROM claims; DELETE FROM alternatives; DELETE FROM items; DELETE FROM sessions; DELETE FROM profiles;'));
+beforeEach(() => db.exec('DELETE FROM claims; DELETE FROM alternatives; DELETE FROM items; DELETE FROM sessions; DELETE FROM family_memberships; DELETE FROM families; DELETE FROM profiles;'));
 after(async () => { await app.close(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
-async function profile(name: string, pin?: string) {
+async function profile(name: string, pin?: string, joinTestFamily = true) {
   const response = await app.inject({ method: 'POST', url: '/api/profiles', payload: { name, pin } });
   assert.equal(response.statusCode, 200, response.body);
   const cookie = String(response.headers['set-cookie']).split(';')[0];
-  return { id: response.json().me.id as number, cookie };
+  const id = response.json().me.id as number;
+  if (joinTestFamily) {
+    db.prepare("INSERT OR IGNORE INTO families (name) VALUES ('Pruebas')").run();
+    const familyId = (db.prepare("SELECT id FROM families WHERE name = 'Pruebas'").get() as { id: number }).id;
+    db.prepare('INSERT INTO family_memberships (family_id, profile_id) VALUES (?, ?)').run(familyId, id);
+  }
+  return { id, cookie };
 }
 async function item(cookie: string, title = 'Libro') {
   const response = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie }, payload: { title, url: 'https://shop.example/item', rating: 5 } });
@@ -86,6 +92,50 @@ test('members can manage their profile and clear their list; admins can manage p
   assert.equal((await app.inject({ method: 'DELETE', url: `/api/admin/profiles/${member.id}`, headers: { cookie: admin.cookie } })).statusCode, 200);
   assert.equal((await app.inject({ method: 'GET', url: '/api/profiles' })).json().length, 1);
   assert.ok(ownWish.id);
+});
+
+test('families restrict wishlist and reservation access, support overlapping memberships, and orphan members retain their own lists', async () => {
+  const admin = await profile('Admin de familias', undefined, false);
+  const owner = await profile('Propietaria', undefined, false);
+  const buyerA = await profile('Compradora A', undefined, false);
+  const buyerB = await profile('Compradora B', undefined, false);
+  const orphan = await profile('Perfil huérfano', undefined, false);
+  const outsider = await profile('Sin familia', undefined, false);
+  const familyA = await app.inject({ method: 'POST', url: '/api/admin/families', headers: { cookie: admin.cookie }, payload: { name: 'Familia A' } });
+  const familyB = await app.inject({ method: 'POST', url: '/api/admin/families', headers: { cookie: admin.cookie }, payload: { name: 'Familia B' } });
+  assert.equal(familyA.statusCode, 201, familyA.body);
+  assert.equal(familyB.statusCode, 201, familyB.body);
+  await app.inject({ method: 'PUT', url: `/api/admin/families/${familyA.json().id}`, headers: { cookie: admin.cookie }, payload: { profileIds: [owner.id, buyerA.id] } });
+  await app.inject({ method: 'PUT', url: `/api/admin/families/${familyB.json().id}`, headers: { cookie: admin.cookie }, payload: { profileIds: [owner.id, buyerB.id, orphan.id] } });
+  assert.equal((await app.inject({ method: 'GET', url: '/api/admin/families', headers: { cookie: buyerA.cookie } })).statusCode, 403);
+  assert.deepEqual(new Set((await app.inject({ method: 'GET', url: '/api/profiles/visible', headers: { cookie: orphan.cookie } })).json().map((p: any) => p.id)), new Set([orphan.id, owner.id, buyerB.id]));
+
+  const wish = await item(owner.cookie, 'Regalo compartido');
+  const visibleToB = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: buyerB.cookie } });
+  assert.equal(visibleToB.statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${wish.id}/claim`, headers: { cookie: buyerA.cookie }, payload: {} })).statusCode, 201);
+  const sharedReservation = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: buyerB.cookie } });
+  assert.equal(sharedReservation.json()[0].reservedBy.name, 'Compradora A');
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${wish.id}/claim`, headers: { cookie: buyerB.cookie }, payload: {} })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: outsider.cookie } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${wish.id}/claim`, headers: { cookie: outsider.cookie }, payload: {} })).statusCode, 404);
+
+  const orphanWish = await item(orphan.cookie, 'Deseo propio');
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/admin/families/${familyB.json().id}`, headers: { cookie: admin.cookie } })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: orphan.cookie } })).json()[0].id, orphanWish.id);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: buyerB.cookie } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/items/mine`, headers: { cookie: owner.cookie } })).json()[0].id, wish.id);
+});
+
+test('categories are suggested globally and newly typed labels are saved on wishes', async () => {
+  alice = await profile('Etiquetas A');
+  bob = await profile('Etiquetas B');
+  const first = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: alice.cookie }, payload: { title: 'Libro', category: 'Lectura' } });
+  assert.equal(first.statusCode, 201);
+  const saved = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: bob.cookie }, payload: { title: 'Maleta', category: 'Viaje' } });
+  assert.equal(saved.statusCode, 201);
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/categories', headers: { cookie: bob.cookie } })).json(), ['Lectura', 'Viaje']);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].category, 'Viaje');
 });
 
 test('owner wishlist stays identical after a claim; visitors see the buyer and can remove their claim', async () => {

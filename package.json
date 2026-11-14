@@ -1,9 +1,10 @@
 {
   "name": "regalos",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite",
     "probe:scrape": "tsx scripts/probe-scrape.ts",

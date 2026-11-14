@@ -66,8 +66,10 @@ The tests exercise profile and PIN flows, wishlist and alternative CRUD, claim o
 ## Product behavior
 
 - Profiles have optional 4–8 digit PINs. PINs are stored as scrypt hashes; sessions use an HTTP-only cookie. The first profile on a fresh install is an administrator. Existing databases are upgraded by making their oldest profile an administrator if no admin exists.
+- Administrators manage families and assign profiles to one or more families. Existing profiles are placed in a default `Familia` on upgrade; profiles created later start without a family until assigned. Profiles only see wishlists from their own family groups. Deleting a family keeps profiles and wishes; profiles left without a family can see only their own list until reassigned.
 - Members can edit their name, avatar, and PIN, and clear their own complete wishlist. Administrators can edit profile details, reset or remove PINs, promote members, and remove profiles. At least one administrator must remain; admins cannot delete or demote themselves from the admin panel.
 - Adding a product starts with any HTTP or HTTPS URL. The server attempts JSON-LD, Open Graph, and page fallbacks; the preview remains editable before saving.
+- Gift categories are shared labels. The editor suggests labels already used on saved gifts and accepts new labels.
 - Wishlist owners can manage items and alternatives. Other signed-in profiles can view lists and reserve one item each; visitor views show the buyer’s name.
 - Owners never receive reservation state, buyer names, counts, or other fields derived from claims.
 - URL and image requests reject private, loopback, link-local, and reserved addresses, including after redirects. Product images are saved locally.
