@@ -6,7 +6,10 @@ import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
+import { runMigrations, TARGET_SCHEMA_REVISION } from './migrations.js';
+import { createLoggerOptions } from './logging.js';
 import { importImageFromUrl, saveUploadedImage, scrapeProduct } from './scrape.js';
+import { allocateLabelColorFromDatabase } from '../shared/label-colors.js';
 
 const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
@@ -77,7 +80,7 @@ const profilesShareFamily = (firstProfileId: number, secondProfileId: number) =>
 
 type ItemInput = {
   title?: unknown; url?: unknown; imagePath?: unknown; price?: unknown; currency?: unknown;
-  rating?: unknown; notes?: unknown; category?: unknown;
+  rating?: unknown; notes?: unknown; category?: unknown; labels?: unknown;
 };
 const itemFields = (input: ItemInput, partial = false) => {
   const errors: string[] = [];
@@ -96,7 +99,28 @@ const itemFields = (input: ItemInput, partial = false) => {
   const url = text(input.url, 2048, 'El enlace');
   const imagePath = text(input.imagePath, 500, 'La imagen');
   const notes = text(input.notes, 2000, 'Las notas');
-  const category = text(input.category, 60, 'La categoría');
+  let labels: string[] | null = null;
+  let labelsInput: unknown;
+  if (input.labels !== undefined) labelsInput = input.labels === null ? [] : input.labels;
+  else if (input.category !== undefined) labelsInput = input.category === null ? [] : [input.category];
+  else labelsInput = partial ? null : [];
+  if (labelsInput !== null) {
+    if (!Array.isArray(labelsInput)) {
+      errors.push('Las etiquetas no son válidas');
+      labels = [];
+    } else {
+      labels = [];
+      for (const value of labelsInput) {
+        if (typeof value !== 'string' || value.length > 60) {
+          errors.push('Una etiqueta no es válida');
+          continue;
+        }
+        const normalized = value.trim().toLowerCase();
+        if (normalized && !labels.includes(normalized)) labels.push(normalized);
+      }
+    }
+  }
+  const category = labels === null ? null : labels[0] ?? null;
   const currency = (text(input.currency, 3, 'La moneda') ?? 'EUR').toUpperCase();
   const price = input.price === undefined && partial ? null : parsePriceInput(input.price);
   if (price !== null && (!Number.isFinite(price) || price < 0 || price > 1_000_000_000)) errors.push('El precio no es válido');
@@ -107,19 +131,36 @@ const itemFields = (input: ItemInput, partial = false) => {
   if (!partial && !title) title = fallbackItemTitle(url);
   if (!partial && !title) errors.push('Añade un enlace o un nombre');
   if (imagePath && !imagePath.startsWith('/images/')) errors.push('La imagen no es válida');
-  return { errors, fields: { title, url, imagePath, price, currency, rating, notes, category } };
+  return { errors, fields: { title, url, imagePath, price, currency, rating, notes, category, labels } };
 };
 
 const publicItem = (row: any) => ({
   id: row.id, profileId: row.profile_id, title: row.title, url: row.url,
   imagePath: row.image_path, price: row.price, currency: row.currency,
-  rating: row.rating, notes: row.notes, category: row.category, createdAt: row.created_at,
+  rating: row.rating, notes: row.notes, category: row.labels?.[0]?.name ?? row.category,
+  labels: row.labels ?? [], createdAt: row.created_at,
   alternatives: row.alternatives ?? [],
   ...(Object.hasOwn(row, 'claim_profile_id') ? {
     reservedBy: row.claim_profile_id ? { id: row.claim_profile_id, name: row.claim_profile_name, avatar: row.claim_profile_avatar } : null,
   } : {}),
 });
 const alternativesFor = (itemId: number) => db.prepare('SELECT id, url, title, price, image_path as imagePath, note FROM alternatives WHERE item_id = ? ORDER BY id').all(itemId);
+const labelsForItem = (itemId: number) => db.prepare(`SELECT l.name, l.color FROM labels l
+  JOIN item_labels il ON il.label_name = l.name WHERE il.item_id = ? ORDER BY l.name COLLATE NOCASE`).all(itemId) as Array<{ name: string; color: string }>;
+const replaceItemLabels = (itemId: number, names: string[]) => {
+  const remove = db.prepare('DELETE FROM item_labels WHERE item_id = ?');
+  const find = db.prepare('SELECT 1 FROM labels WHERE name = ?');
+  const add = db.prepare('INSERT INTO item_labels (item_id, label_name) VALUES (?, ?)');
+  const create = db.prepare('INSERT INTO labels (name, color) VALUES (?, ?)');
+  const insert = db.transaction(() => {
+    remove.run(itemId);
+    for (const name of names) {
+      if (!find.get(name)) create.run(name, allocateLabelColorFromDatabase(db, name));
+      add.run(itemId, name);
+    }
+  });
+  insert();
+};
 const notifyBuyerBeforeItemDelete = (itemId: number, itemTitle: string, ownerId: number, ownerName: string) => {
   const claim = db.prepare('SELECT profile_id FROM claims WHERE item_id = ?').get(itemId) as { profile_id: number } | undefined;
   if (claim && claim.profile_id !== ownerId) {
@@ -129,7 +170,7 @@ const notifyBuyerBeforeItemDelete = (itemId: number, itemTitle: string, ownerId:
 const myItems = (profileId: number) => {
   // PRIVACY: this owner-only query deliberately never reads the claims table.
   const rows = db.prepare('SELECT * FROM items WHERE profile_id = ? ORDER BY created_at DESC, id DESC').all(profileId) as any[];
-  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id) }));
+  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id), labels: labelsForItem(row.id) }));
 };
 const viewedItems = (profileId: number) => {
   const rows = db.prepare(`SELECT i.*, c.profile_id AS claim_profile_id,
@@ -137,7 +178,7 @@ const viewedItems = (profileId: number) => {
     FROM items i LEFT JOIN claims c ON c.item_id = i.id
     LEFT JOIN profiles buyer ON buyer.id = c.profile_id
     WHERE i.profile_id = ? ORDER BY i.created_at DESC, i.id DESC`).all(profileId) as any[];
-  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id) }));
+  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id), labels: labelsForItem(row.id) }));
 };
 
 function isConstraintError(error: unknown) {
@@ -146,7 +187,7 @@ function isConstraintError(error: unknown) {
 
 export async function buildApp() {
   const app = Fastify({
-    logger: process.env.NODE_ENV !== 'test',
+    logger: createLoggerOptions(),
     bodyLimit: 2 * 1024 * 1024,
     rewriteUrl: request => {
       const url = request.url ?? '/';
@@ -154,6 +195,16 @@ export async function buildApp() {
         ? url.slice(BASE_PATH.length) || '/'
         : url;
     },
+  });
+  try {
+    runMigrations(db, app.log);
+  } catch (error) {
+    app.log.fatal({ err: error }, 'Database migration failed; refusing startup');
+    await app.close();
+    throw error;
+  }
+  app.addHook('onError', async (request, reply, error) => {
+    request.log.error({ err: error, statusCode: reply.statusCode, route: request.routeOptions.url }, 'Request failed');
   });
   await app.register(cookie);
 
@@ -420,7 +471,7 @@ export async function buildApp() {
         (imageHost, message) => req.log.warn({ imageHost, message }, 'No se pudo descargar la imagen del producto'),
       );
     } catch (error) {
-      req.log.warn({ err: error }, 'No se pudo extraer el enlace');
+      req.log.warn({ errorType: error instanceof Error ? error.name : 'UnknownError' }, 'No se pudo extraer el enlace');
       return reply.code(400).send({ error: 'No pudimos abrir ese enlace. Comprueba la dirección e inténtalo de nuevo.' });
     }
   });
@@ -462,7 +513,13 @@ export async function buildApp() {
 
   app.get('/api/categories', async (req, reply) => {
     if (!requireProfile(req, reply)) return;
-    return (db.prepare("SELECT DISTINCT category FROM items WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category COLLATE NOCASE").all() as Array<{ category: string }>).map(row => row.category);
+    return (db.prepare(`SELECT DISTINCT l.name FROM labels l JOIN item_labels il ON il.label_name = l.name
+      ORDER BY l.name COLLATE NOCASE`).all() as Array<{ name: string }>).map(row => row.name);
+  });
+
+  app.get('/api/labels', async (req, reply) => {
+    if (!requireProfile(req, reply)) return;
+    return db.prepare('SELECT name, color FROM labels ORDER BY name COLLATE NOCASE').all();
   });
 
   app.get('/api/profiles/:profileId/items', async (req, reply) => {
@@ -482,12 +539,17 @@ export async function buildApp() {
     const { errors, fields } = itemFields((req.body ?? {}) as ItemInput);
     if (errors.length) return reply.code(400).send({ error: errors[0] });
     const f = fields as Required<typeof fields>;
-    const result = db.prepare(`INSERT INTO items (profile_id, title, url, image_path, price, currency, rating, notes, category)
-      VALUES (@profileId, @title, @url, @imagePath, @price, @currency, @rating, @notes, @category)`).run({
-      profileId: me.id, title: f.title, url: f.url, imagePath: f.imagePath, price: f.price,
-      currency: f.currency, rating: f.rating, notes: f.notes, category: f.category,
+    const create = db.transaction(() => {
+      const result = db.prepare(`INSERT INTO items (profile_id, title, url, image_path, price, currency, rating, notes, category)
+        VALUES (@profileId, @title, @url, @imagePath, @price, @currency, @rating, @notes, @category)`).run({
+        profileId: me.id, title: f.title, url: f.url, imagePath: f.imagePath, price: f.price,
+        currency: f.currency, rating: f.rating, notes: f.notes, category: f.category,
+      });
+      replaceItemLabels(Number(result.lastInsertRowid), f.labels ?? []);
+      return Number(result.lastInsertRowid);
     });
-    return reply.code(201).send(myItems(me.id).find((item: any) => item.id === Number(result.lastInsertRowid)));
+    const id = create();
+    return reply.code(201).send(myItems(me.id).find((item: any) => item.id === id));
   });
 
   app.put('/api/items/:itemId', async (req, reply) => {
@@ -504,10 +566,14 @@ export async function buildApp() {
       if (input[key] === undefined || (key === 'title' && !fields.title)) return old;
       return (fields as any)[({ imagePath: 'imagePath' } as any)[key] ?? key];
     };
-    db.prepare(`UPDATE items SET title = ?, url = ?, image_path = ?, price = ?, currency = ?, rating = ?, notes = ?, category = ? WHERE id = ? AND profile_id = ?`)
-      .run(value('title', existing.title), value('url', existing.url), value('imagePath', existing.image_path),
-        value('price', existing.price), value('currency', existing.currency), value('rating', existing.rating),
-        value('notes', existing.notes), value('category', existing.category), id, me.id);
+    const update = db.transaction(() => {
+      db.prepare(`UPDATE items SET title = ?, url = ?, image_path = ?, price = ?, currency = ?, rating = ?, notes = ?, category = ? WHERE id = ? AND profile_id = ?`)
+        .run(value('title', existing.title), value('url', existing.url), value('imagePath', existing.image_path),
+          value('price', existing.price), value('currency', existing.currency), value('rating', existing.rating),
+          value('notes', existing.notes), fields.labels === null ? existing.category : fields.category, id, me.id);
+      if (fields.labels !== null) replaceItemLabels(id, fields.labels);
+    });
+    update();
     return myItems(me.id).find((item: any) => item.id === id);
   });
 
@@ -634,6 +700,16 @@ const startSession = (reply: FastifyReply, profileId: number) => {
 
 const thisFile = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === thisFile) {
-  const app = await buildApp();
-  await app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+  try {
+    app = await buildApp();
+    const port = Number(process.env.PORT ?? 3000);
+    await app.listen({ port, host: '0.0.0.0' });
+    app.log.info({ port, schemaRevision: TARGET_SCHEMA_REVISION }, 'GiftApp is ready');
+  } catch (error) {
+    app?.log.fatal({ err: error, schemaRevision: TARGET_SCHEMA_REVISION }, 'GiftApp failed to start');
+    if (app) await app.close();
+    db.close();
+    process.exitCode = 1;
+  }
 }

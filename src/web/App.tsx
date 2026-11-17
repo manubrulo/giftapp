@@ -1,5 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useState } from 'react';
 import { api, appAssetUrl } from './api';
+import { allocateLabelColor } from '../shared/label-colors';
 
 declare const __APP_VERSION__: string;
 
@@ -8,17 +9,27 @@ type AdminProfile = Profile & { itemCount: number; createdAt?: string };
 type Family = { id: number; name: string; profileIds: number[] };
 type Notice = { id: number; itemTitle: string; deletedBy: string; createdAt: string };
 type Alternative = { id: number; url: string | null; title: string | null; price: number | null; imagePath: string | null; note: string | null };
+type Label = { name: string; color: string };
 type Item = {
   id: number; profileId: number; title: string; url: string | null; imagePath: string | null;
   price: number | null; currency: string; rating: number; notes: string | null; category: string | null;
-  alternatives: Alternative[]; reservedBy?: { id: number; name: string; avatar: string } | null;
+  labels: Label[]; alternatives: Alternative[]; reservedBy?: { id: number; name: string; avatar: string } | null;
 };
-type ItemDraft = { title: string; url: string; imagePath: string; price: string; currency: string; rating: number; notes: string; category: string };
-const AVATARS = ['🙂', '😎', '🦊', '🐼', '🌸', '🚀', '🎧', '🍕'];
+type ItemDraft = { title: string; url: string; imagePath: string; price: string; currency: string; rating: number; notes: string; labels: string[] };
+const AVATARS = [
+  '🙂', '😎', '😍', '🤓', '🥳', '🤖', '👻', '🐶', '🐱', '🐼', '🦊', '🐸', '🦄', '🌸', '🚀', '🎧',
+];
 const btn = 'rounded-xl px-4 py-3 font-semibold active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ribbon disabled:opacity-50';
 const primary = `${btn} bg-ribbon text-white`;
 const input = 'w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base focus-visible:outline-2 focus-visible:outline-ribbon';
-const blankDraft = (): ItemDraft => ({ title: '', url: '', imagePath: '', price: '', currency: 'EUR', rating: 3, notes: '', category: '' });
+const labelColors: Record<string, string> = {
+  rose: 'bg-rose-100 text-rose-900', orange: 'bg-orange-100 text-orange-900', amber: 'bg-amber-100 text-amber-900',
+  lime: 'bg-lime-100 text-lime-900', emerald: 'bg-emerald-100 text-emerald-900', teal: 'bg-teal-100 text-teal-900',
+  sky: 'bg-sky-100 text-sky-900', blue: 'bg-blue-100 text-blue-900', indigo: 'bg-indigo-100 text-indigo-900',
+  violet: 'bg-violet-100 text-violet-900', fuchsia: 'bg-fuchsia-100 text-fuchsia-900', slate: 'bg-slate-200 text-slate-900',
+};
+const labelClass = (color: string) => labelColors[color] ?? labelColors.slate;
+const blankDraft = (): ItemDraft => ({ title: '', url: '', imagePath: '', price: '', currency: 'EUR', rating: 3, notes: '', labels: [] });
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 async function fitImageForUpload(file: File): Promise<File> {
@@ -390,7 +401,7 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
     {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
     {item.imagePath && <div className="item-card-image"><img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" /></div>}
     <div className={`item-card-content p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
-      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <span className="mt-2 inline-flex rounded-full bg-paper px-3 py-1 text-sm font-medium">{item.category}</span>}</div>
+      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.labels.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{item.labels.map(label => <span key={label.name} className={`inline-flex rounded-full px-3 py-1 text-sm font-medium ${labelClass(label.color)}`}>{label.name}</span>)}</div>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
       </div>
       {item.price != null && <p className="mt-3 text-lg font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(item.price)}</p>}
@@ -405,10 +416,86 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
   </>;
 }
 
+function LabelPicker({ value, options, onChange }: { value: string[]; options: Label[]; onChange: (labels: string[]) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const normalizedQuery = query.trim().toLowerCase();
+  const selectedNames = new Set(value);
+  const matches = options.filter(label => !selectedNames.has(label.name) && (!normalizedQuery || label.name.includes(normalizedQuery)));
+  const exactMatch = options.some(label => label.name === normalizedQuery);
+  const createNew = !!normalizedQuery && !exactMatch && !selectedNames.has(normalizedQuery);
+  const usedColors = new Set(options.map(label => label.color));
+  const selectedLabels = value.map(name => {
+    const existing = options.find(label => label.name === name);
+    if (existing) return existing;
+    const color = allocateLabelColor(name, usedColors);
+    usedColors.add(color);
+    return { name, color };
+  });
+  const add = (name: string) => {
+    const normalized = name.trim().toLowerCase();
+    if (normalized && !selectedNames.has(normalized)) onChange([...value, normalized]);
+    setQuery('');
+    setActiveIndex(-1);
+    setOpen(true);
+  };
+  const choices = [
+    ...matches.map(label => ({ ...label, create: false })),
+    ...(createNew ? [{ name: normalizedQuery, color: allocateLabelColor(normalizedQuery, usedColors), create: true }] : []),
+  ];
+  return <div className="space-y-1">
+    <span className="font-semibold">Etiquetas</span>
+    <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+      <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-ink/20 bg-white px-3 py-2 focus-within:outline-2 focus-within:outline-ribbon">
+        {selectedLabels.map(label => <span key={label.name} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium ${labelClass(label.color)}`}>
+          {label.name}<button type="button" className="rounded-full px-1 text-xs leading-none opacity-70 hover:bg-black/10 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-current" aria-label={`Quitar etiqueta ${label.name}`} onClick={() => onChange(value.filter(name => name !== label.name))}>×</button>
+        </span>)}
+        <input
+          className="min-w-28 flex-1 border-0 bg-transparent px-1 py-1 text-base outline-none"
+          value={query}
+          maxLength={60}
+          placeholder={value.length ? '' : 'Escribe o elige etiquetas'}
+          role="combobox"
+          aria-label="Añadir etiquetas"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls="item-label-options"
+          onFocus={() => setOpen(true)}
+          onChange={event => { setQuery(event.target.value.toLowerCase()); setOpen(true); setActiveIndex(-1); }}
+          onKeyDown={event => {
+            if (event.key === 'Backspace' && !query && value.length) {
+              event.preventDefault(); onChange(value.slice(0, -1));
+            } else if (event.key === 'ArrowDown') {
+              event.preventDefault(); setOpen(true); setActiveIndex(index => Math.min(index + 1, choices.length - 1));
+            } else if (event.key === 'ArrowUp') {
+              event.preventDefault(); setOpen(true); setActiveIndex(index => Math.max(index - 1, 0));
+            } else if (event.key === 'Enter' || event.key === ',') {
+              event.preventDefault();
+              const choice = open ? choices[activeIndex] : undefined;
+              add(choice?.name ?? (createNew ? normalizedQuery : matches[0]?.name ?? normalizedQuery));
+            } else if (event.key === 'Escape') setOpen(false);
+          }}
+        />
+        <button type="button" className="px-2 text-ink/70" aria-label="Mostrar etiquetas sugeridas" aria-expanded={open} onClick={() => setOpen(show => !show)}>▾</button>
+      </div>
+      {open && <ul id="item-label-options" role="listbox" aria-label="Etiquetas sugeridas" className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border border-ink/15 bg-white p-2 shadow-lg">
+        {choices.length ? choices.map((choice, index) => <li key={`${choice.create ? 'new' : 'existing'}-${choice.name}`}>
+          <button type="button" role="option" aria-selected={index === activeIndex} onMouseDown={event => event.preventDefault()} onClick={() => add(choice.name)} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-moss ${index === activeIndex ? 'bg-moss/70' : ''}`}>
+            <span className={`rounded-md px-2 py-1 text-sm ${labelClass(choice.color)}`}>{choice.name}</span>
+            {choice.create && <span className="text-sm opacity-70">Crear etiqueta</span>}
+          </button>
+        </li>) : <li className="px-3 py-2 text-sm opacity-60">No hay más sugerencias</li>}
+      </ul>}
+    </div>
+    <span className="block text-sm opacity-70">Escribe y pulsa Enter para añadir; puedes elegir varias.</span>
+  </div>;
+}
+
 function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: () => void; onSaved: () => void }) {
   const [draft, setDraft] = useState<ItemDraft>(() => item ? {
     title: item.title, url: item.url ?? '', imagePath: item.imagePath ?? '', price: item.price == null ? '' : String(item.price),
-    currency: item.currency || 'EUR', rating: item.rating, notes: item.notes ?? '', category: item.category ?? '',
+    currency: item.currency || 'EUR', rating: item.rating, notes: item.notes ?? '', labels: item.labels.map(label => label.name),
   } : blankDraft());
   const [scraping, setScraping] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -419,8 +506,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   const [imageDragOver, setImageDragOver] = useState(false);
   const [error, setError] = useState('');
   const [scrapeNotice, setScrapeNotice] = useState('');
-  const [categories, setCategories] = useState<string[]>([]);
-  useEffect(() => { api<string[]>('/categories').then(setCategories).catch(() => {}); }, []);
+  const [labels, setLabels] = useState<Label[]>([]);
+  useEffect(() => { api<Label[]>('/labels').then(setLabels).catch(() => {}); }, []);
   const set = (key: keyof ItemDraft, value: string | number) => setDraft(d => ({ ...d, [key]: value }));
   const scrape = async () => {
     setError(''); setScrapeNotice(''); setScraping(true);
@@ -463,7 +550,7 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError('');
-    const payload = { ...draft, price: draft.price.trim() === '' ? null : draft.price, imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null, category: draft.category || null };
+    const payload = { ...draft, price: draft.price.trim() === '' ? null : draft.price, imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null };
     try { if (item) await api(`/items/${item.id}`, payload, 'PUT'); else await api('/items', payload); onSaved(); }
     catch (e) { setError(errorText(e)); }
     finally { setSaving(false); }
@@ -492,8 +579,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       <form onSubmit={save} className="space-y-3">
         <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
         {item && <div className="editor-url-row flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
-        <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
-        <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} list="gift-category-options" placeholder="Elige una o escribe una nueva" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /><datalist id="gift-category-options">{categories.map(category => <option key={category} value={category} />)}</datalist></label>
+        <label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /><span className="block text-sm opacity-70">En euros por defecto; al pegar un enlace intentaremos detectar la moneda.</span></label>
+        <LabelPicker value={draft.labels} options={labels} onChange={next => setDraft(draftState => ({ ...draftState, labels: next }))} />
         <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>
         <label className="block space-y-1"><span className="font-semibold">Notas</span><textarea className={input} rows={3} value={draft.notes} onChange={e => set('notes', e.target.value)} maxLength={2000} /></label>
         {error && <p role="alert" className="rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}

@@ -13,6 +13,8 @@ services:
       DATA_DIR: /data
       WEB_DIR: /frontend
       PORT: "3000"
+      LOG_LEVEL: info
+      LOG_FORMAT: pretty
       # Match the prefix preserved by Caddy's handle /giftapp/* reverse_proxy.
       BASE_PATH: /giftapp
       # Optional: enables the Iframely preview fallback.

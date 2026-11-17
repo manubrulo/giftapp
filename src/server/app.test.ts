@@ -127,15 +127,19 @@ test('families restrict wishlist and reservation access, support overlapping mem
   assert.equal((await app.inject({ method: 'GET', url: `/api/items/mine`, headers: { cookie: owner.cookie } })).json()[0].id, wish.id);
 });
 
-test('categories are suggested globally and newly typed labels are saved on wishes', async () => {
+test('categories are suggested globally in lowercase without case-only duplicates', async () => {
   alice = await profile('Etiquetas A');
   bob = await profile('Etiquetas B');
   const first = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: alice.cookie }, payload: { title: 'Libro', category: 'Lectura' } });
   assert.equal(first.statusCode, 201);
+  assert.equal(first.json().category, 'lectura');
+  const sameLabel = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: bob.cookie }, payload: { title: 'Libreta', category: 'LECTURA' } });
+  assert.equal(sameLabel.statusCode, 201);
+  assert.equal(sameLabel.json().category, 'lectura');
   const saved = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: bob.cookie }, payload: { title: 'Maleta', category: 'Viaje' } });
   assert.equal(saved.statusCode, 201);
-  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/categories', headers: { cookie: bob.cookie } })).json(), ['Lectura', 'Viaje']);
-  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].category, 'Viaje');
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/categories', headers: { cookie: bob.cookie } })).json(), ['lectura', 'viaje']);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].category, 'viaje');
 });
 
 test('owner wishlist stays identical after a claim; visitors see the buyer and can remove their claim', async () => {

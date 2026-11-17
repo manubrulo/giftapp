@@ -13,7 +13,7 @@ pnpm dev:server
 
 In a second terminal, run `pnpm dev:web` and open `http://localhost:5173`.
 
-The API listens on port `3000`. `DATA_DIR` selects where SQLite and downloaded product images are stored; it defaults to `./data`. `PORT` changes the API port.
+The API listens on port `3000`. `DATA_DIR` selects where SQLite and downloaded product images are stored; it defaults to `./data`. `PORT` changes the API port. `LOG_LEVEL` controls verbosity (`fatal`, `error`, `warn`, `info`, `debug`, `trace`, or `silent`); production defaults to `info` and development to `debug`. `LOG_FORMAT` defaults to readable, single-line `pretty` output; set it to `json` for machine-readable logs.
 
 ## Install on TrueNAS SCALE
 
@@ -37,6 +37,8 @@ The server serves static frontend files from a mounted directory. On first start
 
 4. Save and wait for the app to start. Open `http://TRUENAS_IP:3000` (or the alternate host port you chose). On first use, create the household's first profile; it becomes the admin. Back up the dataset regularly or enable TrueNAS snapshots to protect the database and images.
 
+GiftApp checks the database schema revision against the revision bundled in the image at startup and applies pending migrations before accepting requests. Before deploying an image that may change the database, create a dataset snapshot or a SQLite-consistent backup of `regalos.db` (and retain the images directory). If startup reports a migration error, stop the app and restore the pre-upgrade backup before retrying. GiftApp does not downgrade databases automatically. Migration progress, the selected schema revision, request outcomes, and application errors are logged as structured events; query strings and credential headers are excluded from request logs.
+
 These are the current TrueNAS Apps steps for deploying a Compose YAML custom app; menu labels can vary slightly by TrueNAS release. See the official [installing custom apps guide](https://apps.truenas.com/managing-apps/installing-custom-apps/) and [Custom App YAML screen reference](https://www.truenas.com/docs/scale/26/apps/installcustomappscreens/).
 
 ## Probe product links through the API
@@ -47,7 +49,7 @@ With GiftApp running and a profile session active in its database, send one or m
 pnpm probe:scrape https://shop.example/product https://another-shop.example/item
 ```
 
-The script calls the authenticated `POST /api/scrape` endpoint sequentially and prints each API response plus `imageDownloaded`. Add `--add` to also create wishlist entries through `POST /api/items`; those entries are marked with category `Prueba de extracción`, and an existing item with the same URL is updated instead of duplicated. Use `pnpm probe:scrape --cleanup` to delete all wishes with that test category. Preview images that were downloaded remain in `DATA_DIR/images`, just as they do after a normal preview. Set `API_BASE_URL` if GiftApp is not at `http://127.0.0.1:3000`.
+The script calls the authenticated `POST /api/scrape` endpoint sequentially and prints each API response plus `imageDownloaded`. Add `--add` to also create wishlist entries through `POST /api/items`; those entries are tagged with label `Prueba de extracción`, and an existing item with the same URL is updated instead of duplicated. Use `pnpm probe:scrape --cleanup` to delete all wishes with that test label. Preview images that were downloaded remain in `DATA_DIR/images`, just as they do after a normal preview. Set `API_BASE_URL` if GiftApp is not at `http://127.0.0.1:3000`.
 
 ### Reverse proxy under a URL prefix
 
@@ -69,7 +71,7 @@ The tests exercise profile and PIN flows, wishlist and alternative CRUD, claim o
 - Administrators manage families and assign profiles to one or more families. Existing profiles are placed in a default `Familia` on upgrade; profiles created later start without a family until assigned. Profiles only see wishlists from their own family groups. Deleting a family keeps profiles and wishes; profiles left without a family can see only their own list until reassigned.
 - Members can edit their name, avatar, and PIN, and clear their own complete wishlist. Administrators can edit profile details, reset or remove PINs, promote members, and remove profiles. At least one administrator must remain; admins cannot delete or demote themselves from the admin panel.
 - Adding a product starts with any HTTP or HTTPS URL. The server attempts JSON-LD, Open Graph, and page fallbacks; the preview remains editable before saving.
-- Gift categories are shared labels. The editor suggests labels already used on saved gifts and accepts new labels.
+- Gift labels are shared across wishes. The editor suggests existing labels, allows multiple labels per wish, stores their names in lowercase, and assigns each label a consistent color.
 - Wishlist owners can manage items and alternatives. Other signed-in profiles can view lists and reserve one item each; visitor views show the buyer’s name.
 - Owners never receive reservation state, buyer names, counts, or other fields derived from claims.
 - URL and image requests reject private, loopback, link-local, and reserved addresses, including after redirects. Product images are saved locally.
