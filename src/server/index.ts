@@ -57,9 +57,11 @@ const fallbackItemTitle = (url: string | null) => {
     const parsed = new URL(url);
     const slug = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).at(-1) ?? '')
       .replace(/\.html?$/i, '').replace(/[-_]+/g, ' ').trim();
-    // Product URLs often end in an opaque ID. The host is still a useful,
-    // editable label and lets a link with only a thumbnail be saved.
-    return (slug && !/^[a-z0-9]{6,}$/i.test(slug) ? slug : parsed.hostname).slice(0, 200);
+    // Opaque product IDs and host names are not useful gift names; require a
+    // product title from the preview or a manually entered name instead.
+    return slug && !/^[a-z0-9]{6,}$/i.test(slug) && !/^(products?|items?|p)$/i.test(slug)
+      ? slug.slice(0, 200)
+      : null;
   } catch { return null; }
 };
 const requireProfile = (req: FastifyRequest, reply: FastifyReply): Profile | undefined => {
@@ -81,6 +83,10 @@ const profilesShareFamily = (firstProfileId: number, secondProfileId: number) =>
 type ItemInput = {
   title?: unknown; url?: unknown; imagePath?: unknown; price?: unknown; currency?: unknown;
   rating?: unknown; notes?: unknown; category?: unknown; labels?: unknown;
+};
+type GiftIdeaInput = {
+  title?: unknown; url?: unknown; imagePath?: unknown; price?: unknown; currency?: unknown;
+  notes?: unknown; labels?: unknown;
 };
 const itemFields = (input: ItemInput, partial = false) => {
   const errors: string[] = [];
@@ -129,12 +135,47 @@ const itemFields = (input: ItemInput, partial = false) => {
   if (!/^[A-Z]{3}$/.test(currency)) errors.push('La moneda debe tener 3 letras');
   if (url) { try { if (!['http:', 'https:'].includes(new URL(url).protocol)) errors.push('El enlace debe empezar por http o https'); } catch { errors.push('El enlace no es válido'); } }
   if (!partial && !title) title = fallbackItemTitle(url);
-  if (!partial && !title) errors.push('Añade un enlace o un nombre');
+  if (!partial && !title) errors.push('Añade un nombre o usa Buscar para obtenerlo del enlace');
   if (imagePath && !imagePath.startsWith('/images/')) errors.push('La imagen no es válida');
   return { errors, fields: { title, url, imagePath, price, currency, rating, notes, category, labels } };
 };
 
-const publicItem = (row: any) => ({
+const giftIdeaFields = (input: GiftIdeaInput) => {
+  const errors: string[] = [];
+  const text = (value: unknown, max: number, label: string): string | null => {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value !== 'string' || value.length > max) { errors.push(`${label} no es válido`); return null; }
+    return value.trim() || null;
+  };
+  const url = text(input.url, 2048, 'El enlace');
+  const imagePath = text(input.imagePath, 500, 'La imagen');
+  const notes = text(input.notes, 2000, 'Las notas');
+  let title = text(input.title, 200, 'El título');
+  if (!title) title = fallbackItemTitle(url);
+  if (!title) errors.push('Añade un nombre o usa Buscar para obtenerlo del enlace');
+  if (url) { try { if (!['http:', 'https:'].includes(new URL(url).protocol)) errors.push('El enlace debe empezar por http o https'); } catch { errors.push('El enlace no es válido'); } }
+  if (imagePath && !imagePath.startsWith('/images/')) errors.push('La imagen no es válida');
+
+  const currency = (text(input.currency, 3, 'La moneda') ?? 'EUR').toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) errors.push('La moneda debe tener 3 letras');
+  const price = parsePriceInput(input.price);
+  if (price !== null && (!Number.isFinite(price) || price < 0 || price > 1_000_000_000)) errors.push('El precio no es válido');
+
+  const labels: string[] = [];
+  const labelsInput = input.labels ?? [];
+  if (!Array.isArray(labelsInput)) errors.push('Las etiquetas no son válidas');
+  else for (const value of labelsInput) {
+    if (typeof value !== 'string' || value.length > 60) {
+      errors.push('Una etiqueta no es válida');
+      continue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized && !labels.includes(normalized)) labels.push(normalized);
+  }
+  return { errors, fields: { title, url, imagePath, price, currency, notes, labels } };
+};
+
+const publicItem = (row: any, viewer = false) => ({
   id: row.id, profileId: row.profile_id, title: row.title, url: row.url,
   imagePath: row.image_path, price: row.price, currency: row.currency,
   rating: row.rating, notes: row.notes, category: row.labels?.[0]?.name ?? row.category,
@@ -142,6 +183,12 @@ const publicItem = (row: any) => ({
   alternatives: row.alternatives ?? [],
   ...(Object.hasOwn(row, 'claim_profile_id') ? {
     reservedBy: row.claim_profile_id ? { id: row.claim_profile_id, name: row.claim_profile_name, avatar: row.claim_profile_avatar } : null,
+  } : {}),
+  ...(viewer && Object.hasOwn(row, 'purchase_item_id') ? {
+    boughtAt: row.purchase_item_id ? row.purchased_at : null,
+    boughtBy: row.purchase_item_id ? { name: row.buyer_name, avatar: row.buyer_avatar } : null,
+    ownerDeleted: !!row.deleted_at,
+    deletedByOwnerName: row.deleted_by_owner_name ?? null,
   } : {}),
 });
 const alternativesFor = (itemId: number) => db.prepare('SELECT id, url, title, price, image_path as imagePath, note FROM alternatives WHERE item_id = ? ORDER BY id').all(itemId);
@@ -161,6 +208,44 @@ const replaceItemLabels = (itemId: number, names: string[]) => {
   });
   insert();
 };
+const replaceIdeaLabels = (ideaId: number, names: string[]) => {
+  const remove = db.prepare('DELETE FROM idea_labels WHERE idea_id = ?');
+  const find = db.prepare('SELECT 1 FROM labels WHERE name = ?');
+  const add = db.prepare('INSERT INTO idea_labels (idea_id, label_name) VALUES (?, ?)');
+  const create = db.prepare('INSERT INTO labels (name, color) VALUES (?, ?)');
+  const insert = db.transaction(() => {
+    remove.run(ideaId);
+    for (const name of names) {
+      if (!find.get(name)) create.run(name, allocateLabelColorFromDatabase(db, name));
+      add.run(ideaId, name);
+    }
+  });
+  insert();
+};
+const labelsForIdea = (ideaId: number) => db.prepare(`SELECT l.name, l.color FROM labels l
+  JOIN idea_labels il ON il.label_name = l.name WHERE il.idea_id = ? ORDER BY l.name COLLATE NOCASE`).all(ideaId) as Array<{ name: string; color: string }>;
+const publicIdea = (row: any) => ({
+  id: row.id,
+  recipientProfileId: row.recipient_profile_id,
+  recipientName: row.recipient_name,
+  title: row.title,
+  url: row.url,
+  imagePath: row.image_path,
+  price: row.price,
+  currency: row.currency,
+  notes: row.notes,
+  labels: row.labels ?? [],
+  createdAt: row.created_at,
+});
+const myIdeas = (ownerProfileId: number) => {
+  const rows = db.prepare('SELECT * FROM gift_ideas WHERE owner_profile_id = ? ORDER BY created_at DESC, id DESC').all(ownerProfileId) as any[];
+  return rows.map(row => publicIdea({ ...row, labels: labelsForIdea(row.id) }));
+};
+const ideasForRecipient = (ownerProfileId: number, recipientProfileId: number) => {
+  const rows = db.prepare(`SELECT * FROM gift_ideas
+    WHERE owner_profile_id = ? AND recipient_profile_id = ? ORDER BY created_at DESC, id DESC`).all(ownerProfileId, recipientProfileId) as any[];
+  return rows.map(row => publicIdea({ ...row, labels: labelsForIdea(row.id) }));
+};
 const notifyBuyerBeforeItemDelete = (itemId: number, itemTitle: string, ownerId: number, ownerName: string) => {
   const claim = db.prepare('SELECT profile_id FROM claims WHERE item_id = ?').get(itemId) as { profile_id: number } | undefined;
   if (claim && claim.profile_id !== ownerId) {
@@ -169,16 +254,32 @@ const notifyBuyerBeforeItemDelete = (itemId: number, itemTitle: string, ownerId:
 };
 const myItems = (profileId: number) => {
   // PRIVACY: this owner-only query deliberately never reads the claims table.
-  const rows = db.prepare('SELECT * FROM items WHERE profile_id = ? ORDER BY created_at DESC, id DESC').all(profileId) as any[];
+  // It also deliberately omits purchase records to preserve the surprise.
+  const rows = db.prepare('SELECT * FROM items WHERE profile_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC').all(profileId) as any[];
   return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id), labels: labelsForItem(row.id) }));
 };
 const viewedItems = (profileId: number) => {
   const rows = db.prepare(`SELECT i.*, c.profile_id AS claim_profile_id,
-      buyer.name AS claim_profile_name, buyer.avatar AS claim_profile_avatar
+      buyer.name AS claim_profile_name, buyer.avatar AS claim_profile_avatar,
+      purchase.item_id AS purchase_item_id, purchase.buyer_name, purchase.buyer_avatar,
+      purchase.purchased_at
     FROM items i LEFT JOIN claims c ON c.item_id = i.id
     LEFT JOIN profiles buyer ON buyer.id = c.profile_id
+    LEFT JOIN item_purchases purchase ON purchase.item_id = i.id
     WHERE i.profile_id = ? ORDER BY i.created_at DESC, i.id DESC`).all(profileId) as any[];
-  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id), labels: labelsForItem(row.id) }));
+  return rows.map(row => publicItem({ ...row, alternatives: alternativesFor(row.id), labels: labelsForItem(row.id) }, true));
+};
+const boughtItemsFor = (buyerProfileId: number) => {
+  const rows = db.prepare(`SELECT i.*, owner.name AS owner_name, owner.avatar AS owner_avatar,
+      purchase.item_id AS purchase_item_id, purchase.buyer_name, purchase.buyer_avatar, purchase.purchased_at
+    FROM item_purchases purchase JOIN items i ON i.id = purchase.item_id
+    JOIN profiles owner ON owner.id = i.profile_id
+    WHERE purchase.buyer_profile_id = ? ORDER BY purchase.purchased_at DESC, i.id DESC`).all(buyerProfileId) as any[];
+  return rows.map(row => ({
+    ...publicItem({ ...row, labels: labelsForItem(row.id), alternatives: alternativesFor(row.id) }, true),
+    ownerName: row.owner_name,
+    ownerAvatar: row.owner_avatar,
+  }));
 };
 
 function isConstraintError(error: unknown) {
@@ -308,10 +409,15 @@ export async function buildApp() {
   app.delete('/api/items/mine', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
-    const items = db.prepare('SELECT id, title FROM items WHERE profile_id = ?').all(me.id) as Array<{ id: number; title: string }>;
+    const items = db.prepare(`SELECT i.id, i.title, EXISTS(
+      SELECT 1 FROM item_purchases purchase WHERE purchase.item_id = i.id
+    ) AS purchased FROM items i WHERE i.profile_id = ? AND i.deleted_at IS NULL`).all(me.id) as Array<{ id: number; title: string; purchased: number }>;
     const remove = db.transaction(() => {
       for (const item of items) notifyBuyerBeforeItemDelete(item.id, item.title, me.id, me.name);
-      return db.prepare('DELETE FROM items WHERE profile_id = ?').run(me.id).changes;
+      const retain = db.prepare('UPDATE items SET deleted_at = CURRENT_TIMESTAMP, deleted_by_owner_name = ? WHERE id = ? AND profile_id = ?');
+      const erase = db.prepare('DELETE FROM items WHERE id = ? AND profile_id = ?');
+      for (const item of items) item.purchased ? retain.run(me.name, item.id, me.id) : erase.run(item.id, me.id);
+      return items.length;
     });
     return { ok: true, deleted: remove() };
   });
@@ -326,20 +432,31 @@ export async function buildApp() {
       return reply.code(400).send({ error: 'Selecciona entre 1 y 500 deseos válidos' });
     }
     const placeholders = itemIds.map(() => '?').join(', ');
-    const owned = Number((db.prepare(`SELECT COUNT(*) AS count FROM items WHERE profile_id = ? AND id IN (${placeholders})`).get(me.id, ...itemIds) as any).count);
+    const owned = Number((db.prepare(`SELECT COUNT(*) AS count FROM items WHERE profile_id = ? AND deleted_at IS NULL AND id IN (${placeholders})`).get(me.id, ...itemIds) as any).count);
     if (owned !== itemIds.length) return reply.code(404).send({ error: 'Uno o más deseos ya no están disponibles en tu lista' });
-    const selectedItems = db.prepare(`SELECT id, title FROM items WHERE profile_id = ? AND id IN (${placeholders})`).all(me.id, ...itemIds) as Array<{ id: number; title: string }>;
+    const selectedItems = db.prepare(`SELECT i.id, i.title, EXISTS(
+      SELECT 1 FROM item_purchases purchase WHERE purchase.item_id = i.id
+    ) AS purchased FROM items i WHERE i.profile_id = ? AND i.deleted_at IS NULL AND i.id IN (${placeholders})`).all(me.id, ...itemIds) as Array<{ id: number; title: string; purchased: number }>;
     const remove = db.transaction(() => {
       for (const item of selectedItems) notifyBuyerBeforeItemDelete(item.id, item.title, me.id, me.name);
-      return db.prepare(`DELETE FROM items WHERE profile_id = ? AND id IN (${placeholders})`).run(me.id, ...itemIds).changes;
+      const retain = db.prepare('UPDATE items SET deleted_at = CURRENT_TIMESTAMP, deleted_by_owner_name = ? WHERE id = ? AND profile_id = ?');
+      const erase = db.prepare('DELETE FROM items WHERE id = ? AND profile_id = ?');
+      for (const item of selectedItems) item.purchased ? retain.run(me.name, item.id, me.id) : erase.run(item.id, me.id);
+      return selectedItems.length;
     });
     return { ok: true, deleted: remove() };
+  });
+
+  app.get('/api/purchases/mine', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    return boughtItemsFor(me.id);
   });
 
   app.get('/api/admin/profiles', async (req, reply) => {
     if (!requireAdmin(req, reply)) return;
     return db.prepare(`SELECT p.id, p.name, p.avatar, p.role, p.pin_hash IS NOT NULL AS hasPin, p.created_at AS createdAt,
-      (SELECT COUNT(*) FROM items i WHERE i.profile_id = p.id) AS itemCount
+      (SELECT COUNT(*) FROM items i WHERE i.profile_id = p.id AND i.deleted_at IS NULL) AS itemCount
       FROM profiles p ORDER BY p.created_at, p.id`).all();
   });
 
@@ -436,7 +553,7 @@ export async function buildApp() {
     try {
       db.prepare('UPDATE profiles SET name = ?, avatar = ?, role = ?, pin_hash = ? WHERE id = ?').run(name, avatar, role, pinHash, id);
       const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as Profile;
-      return { ...publicProfile(profile), itemCount: Number((db.prepare('SELECT COUNT(*) AS n FROM items WHERE profile_id = ?').get(id) as any).n) };
+      return { ...publicProfile(profile), itemCount: Number((db.prepare('SELECT COUNT(*) AS n FROM items WHERE profile_id = ? AND deleted_at IS NULL').get(id) as any).n) };
     } catch (error) {
       if (isConstraintError(error)) return reply.code(409).send({ error: 'Ya existe un perfil con ese nombre' });
       throw error;
@@ -522,6 +639,86 @@ export async function buildApp() {
     return db.prepare('SELECT name, color FROM labels ORDER BY name COLLATE NOCASE').all();
   });
 
+  app.get('/api/ideas/mine', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    return myIdeas(me.id);
+  });
+
+  app.get('/api/profiles/:profileId/ideas', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const recipientId = positiveId((req.params as any).profileId);
+    if (recipientId === null) return reply.code(400).send({ error: 'Perfil no válido' });
+    if (recipientId === me.id || !db.prepare('SELECT id FROM profiles WHERE id = ?').get(recipientId)
+      || !profilesShareFamily(me.id, recipientId)) return reply.code(404).send({ error: 'Ideas no encontradas' });
+    return ideasForRecipient(me.id, recipientId);
+  });
+
+  app.post('/api/profiles/:profileId/ideas', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const recipientId = positiveId((req.params as any).profileId);
+    if (recipientId === null) return reply.code(400).send({ error: 'Perfil no válido' });
+    if (recipientId === me.id || !profilesShareFamily(me.id, recipientId)) return reply.code(404).send({ error: 'Perfil no encontrado' });
+    const recipient = db.prepare('SELECT id, name FROM profiles WHERE id = ?').get(recipientId) as { id: number; name: string } | undefined;
+    if (!recipient) return reply.code(404).send({ error: 'Perfil no encontrado' });
+    const { errors, fields } = giftIdeaFields((req.body ?? {}) as GiftIdeaInput);
+    if (errors.length) return reply.code(400).send({ error: errors[0] });
+    const insertIdea = db.transaction(() => {
+      const result = db.prepare(`INSERT INTO gift_ideas
+        (owner_profile_id, recipient_profile_id, recipient_name, title, url, image_path, price, currency, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        me.id, recipient.id, recipient.name, fields.title, fields.url, fields.imagePath,
+        fields.price, fields.currency, fields.notes,
+      );
+      const id = Number(result.lastInsertRowid);
+      replaceIdeaLabels(id, fields.labels);
+      return id;
+    });
+    const id = insertIdea();
+    return reply.code(201).send(ideasForRecipient(me.id, recipient.id).find(idea => idea.id === id));
+  });
+
+  app.put('/api/ideas/:ideaId', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const ideaId = positiveId((req.params as any).ideaId);
+    if (ideaId === null) return reply.code(400).send({ error: 'Idea no válida' });
+    const existing = db.prepare('SELECT * FROM gift_ideas WHERE id = ? AND owner_profile_id = ?').get(ideaId, me.id) as any;
+    if (!existing) return reply.code(404).send({ error: 'No encontramos esa idea' });
+    const input = (req.body ?? {}) as GiftIdeaInput;
+    const { errors, fields } = giftIdeaFields({
+      title: input.title === undefined ? existing.title : input.title,
+      url: input.url === undefined ? existing.url : input.url,
+      imagePath: input.imagePath === undefined ? existing.image_path : input.imagePath,
+      price: input.price === undefined ? existing.price : input.price,
+      currency: input.currency === undefined ? existing.currency : input.currency,
+      notes: input.notes === undefined ? existing.notes : input.notes,
+      labels: input.labels === undefined ? labelsForIdea(ideaId).map(label => label.name) : input.labels,
+    });
+    if (errors.length) return reply.code(400).send({ error: errors[0] });
+    const updateIdea = db.transaction(() => {
+      db.prepare(`UPDATE gift_ideas SET title = ?, url = ?, image_path = ?, price = ?, currency = ?, notes = ?
+        WHERE id = ? AND owner_profile_id = ?`).run(
+        fields.title, fields.url, fields.imagePath, fields.price, fields.currency, fields.notes, ideaId, me.id,
+      );
+      if (input.labels !== undefined) replaceIdeaLabels(ideaId, fields.labels);
+    });
+    updateIdea();
+    return myIdeas(me.id).find(idea => idea.id === ideaId);
+  });
+
+  app.delete('/api/ideas/:ideaId', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const ideaId = positiveId((req.params as any).ideaId);
+    if (ideaId === null) return reply.code(400).send({ error: 'Idea no válida' });
+    const removed = db.prepare('DELETE FROM gift_ideas WHERE id = ? AND owner_profile_id = ?').run(ideaId, me.id);
+    if (!removed.changes) return reply.code(404).send({ error: 'No encontramos esa idea' });
+    return { ok: true };
+  });
+
   app.get('/api/profiles/:profileId/items', async (req, reply) => {
     const me = requireProfile(req, reply);
     if (!me) return;
@@ -557,7 +754,7 @@ export async function buildApp() {
     if (!me) return;
     const id = positiveId((req.params as any).itemId);
     if (id === null) return reply.code(400).send({ error: 'Deseo no válido' });
-    const existing = db.prepare('SELECT * FROM items WHERE id = ? AND profile_id = ?').get(id, me.id) as any;
+    const existing = db.prepare('SELECT * FROM items WHERE id = ? AND profile_id = ? AND deleted_at IS NULL').get(id, me.id) as any;
     if (!existing) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     const input = (req.body ?? {}) as ItemInput;
     const { errors, fields } = itemFields(input, true);
@@ -582,10 +779,17 @@ export async function buildApp() {
     if (!me) return;
     const id = positiveId((req.params as any).itemId);
     if (id === null) return reply.code(400).send({ error: 'Deseo no válido' });
-    const existing = db.prepare('SELECT title FROM items WHERE id = ? AND profile_id = ?').get(id, me.id) as { title: string } | undefined;
+    const existing = db.prepare(`SELECT i.title, i.deleted_at, EXISTS(
+      SELECT 1 FROM item_purchases purchase WHERE purchase.item_id = i.id
+    ) AS purchased FROM items i WHERE i.id = ? AND i.profile_id = ?`).get(id, me.id) as { title: string; deleted_at: string | null; purchased: number } | undefined;
     if (!existing) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    if (existing.deleted_at) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     const remove = db.transaction(() => {
       notifyBuyerBeforeItemDelete(id, existing.title, me.id, me.name);
+      if (existing.purchased) {
+        return db.prepare('UPDATE items SET deleted_at = CURRENT_TIMESTAMP, deleted_by_owner_name = ? WHERE id = ? AND profile_id = ? AND deleted_at IS NULL')
+          .run(me.name, id, me.id).changes;
+      }
       return db.prepare('DELETE FROM items WHERE id = ? AND profile_id = ?').run(id, me.id).changes;
     });
     if (!remove()) return reply.code(404).send({ error: 'No encontramos ese deseo' });
@@ -597,7 +801,7 @@ export async function buildApp() {
     if (!me) return;
     const itemId = positiveId((req.params as any).itemId);
     if (itemId === null) return reply.code(400).send({ error: 'Deseo no válido' });
-    if (!db.prepare('SELECT id FROM items WHERE id = ? AND profile_id = ?').get(itemId, me.id)) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    if (!db.prepare('SELECT id FROM items WHERE id = ? AND profile_id = ? AND deleted_at IS NULL').get(itemId, me.id)) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     const body = (req.body ?? {}) as any;
     const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : null;
     const url = typeof body.url === 'string' ? body.url.trim().slice(0, 2048) : null;
@@ -618,7 +822,7 @@ export async function buildApp() {
     const id = positiveId((req.params as any).alternativeId);
     if (id === null) return reply.code(400).send({ error: 'Alternativa no válida' });
     const existing = db.prepare(`SELECT a.* FROM alternatives a JOIN items i ON i.id = a.item_id
-      WHERE a.id = ? AND i.profile_id = ?`).get(id, me.id) as any;
+      WHERE a.id = ? AND i.profile_id = ? AND i.deleted_at IS NULL`).get(id, me.id) as any;
     if (!existing) return reply.code(404).send({ error: 'No encontramos esa alternativa' });
     const body = (req.body ?? {}) as any;
     const title = body.title === undefined ? existing.title : typeof body.title === 'string' ? body.title.trim().slice(0, 200) || null : null;
@@ -639,7 +843,7 @@ export async function buildApp() {
     const id = positiveId((req.params as any).alternativeId);
     if (id === null) return reply.code(400).send({ error: 'Alternativa no válida' });
     const result = db.prepare(`DELETE FROM alternatives WHERE id = ? AND item_id IN
-      (SELECT id FROM items WHERE profile_id = ?)`).run(id, me.id);
+      (SELECT id FROM items WHERE profile_id = ? AND deleted_at IS NULL)`).run(id, me.id);
     if (!result.changes) return reply.code(404).send({ error: 'No encontramos esa alternativa' });
     return { ok: true };
   });
@@ -649,10 +853,12 @@ export async function buildApp() {
     if (!me) return;
     const itemId = positiveId((req.params as any).itemId);
     if (itemId === null) return reply.code(400).send({ error: 'Deseo no válido' });
-    const owner = db.prepare('SELECT profile_id FROM items WHERE id = ?').get(itemId) as { profile_id: number } | undefined;
+    const owner = db.prepare('SELECT profile_id, deleted_at FROM items WHERE id = ?').get(itemId) as { profile_id: number; deleted_at: string | null } | undefined;
     if (!owner) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    if (owner.deleted_at) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     if (owner.profile_id === me.id) return reply.code(403).send({ error: 'No puedes reservar tu propio deseo' });
     if (!profilesShareFamily(me.id, owner.profile_id)) return reply.code(404).send({ error: 'Deseo no encontrado' });
+    if (db.prepare('SELECT 1 FROM item_purchases WHERE item_id = ?').get(itemId)) return reply.code(409).send({ error: 'Este regalo ya está comprado' });
     try {
       db.prepare('INSERT INTO claims (item_id, profile_id) VALUES (?, ?)').run(itemId, me.id);
       return reply.code(201).send({ ok: true });
@@ -671,8 +877,52 @@ export async function buildApp() {
     if (!owner) return reply.code(404).send({ error: 'No encontramos ese deseo' });
     if (owner.profile_id === me.id) return reply.code(403).send({ error: 'No puedes cambiar la reserva de tu propio deseo' });
     if (!profilesShareFamily(me.id, owner.profile_id)) return reply.code(404).send({ error: 'Deseo no encontrado' });
+    if (db.prepare('SELECT 1 FROM item_purchases WHERE item_id = ?').get(itemId)) return reply.code(409).send({ error: 'No puedes quitar la reserva de un regalo comprado. Revierte la compra desde Ajustes.' });
     const result = db.prepare('DELETE FROM claims WHERE item_id = ? AND profile_id = ?').run(itemId, me.id);
     if (!result.changes) return reply.code(404).send({ error: 'No tienes una reserva para este deseo' });
+    return { ok: true };
+  });
+
+  app.post('/api/items/:itemId/purchase', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const itemId = positiveId((req.params as any).itemId);
+    if (itemId === null) return reply.code(400).send({ error: 'Deseo no válido' });
+    const item = db.prepare('SELECT profile_id, deleted_at FROM items WHERE id = ?').get(itemId) as { profile_id: number; deleted_at: string | null } | undefined;
+    if (!item || item.deleted_at) return reply.code(404).send({ error: 'No encontramos ese deseo' });
+    if (item.profile_id === me.id) return reply.code(403).send({ error: 'No puedes comprar tu propio deseo' });
+    if (!profilesShareFamily(me.id, item.profile_id)) return reply.code(404).send({ error: 'Deseo no encontrado' });
+    if (!db.prepare('SELECT 1 FROM claims WHERE item_id = ? AND profile_id = ?').get(itemId, me.id)) {
+      return reply.code(409).send({ error: 'Primero tienes que reservar este regalo' });
+    }
+    try {
+      db.prepare(`INSERT INTO item_purchases (item_id, buyer_profile_id, buyer_name, buyer_avatar)
+        VALUES (?, ?, ?, ?)`).run(itemId, me.id, me.name, me.avatar);
+      return reply.code(201).send({ ok: true });
+    } catch (error) {
+      if (isConstraintError(error)) return reply.code(409).send({ error: 'Este regalo ya está comprado' });
+      throw error;
+    }
+  });
+
+  app.delete('/api/purchases/:itemId', async (req, reply) => {
+    const me = requireProfile(req, reply);
+    if (!me) return;
+    const itemId = positiveId((req.params as any).itemId);
+    if (itemId === null) return reply.code(400).send({ error: 'Compra no válida' });
+    const purchase = db.prepare(`SELECT i.deleted_at FROM item_purchases purchase
+      JOIN items i ON i.id = purchase.item_id
+      WHERE purchase.item_id = ? AND purchase.buyer_profile_id = ?`).get(itemId, me.id) as { deleted_at: string | null } | undefined;
+    if (!purchase) return reply.code(404).send({ error: 'No encontramos esa compra' });
+    const revert = db.transaction(() => {
+      if (purchase.deleted_at) {
+        db.prepare('DELETE FROM items WHERE id = ?').run(itemId);
+      } else {
+        db.prepare('DELETE FROM item_purchases WHERE item_id = ? AND buyer_profile_id = ?').run(itemId, me.id);
+        db.prepare('DELETE FROM claims WHERE item_id = ? AND profile_id = ?').run(itemId, me.id);
+      }
+    });
+    revert();
     return { ok: true };
   });
 

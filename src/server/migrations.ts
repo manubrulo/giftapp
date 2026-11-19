@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3';
 import { baselineMigration } from './migrations/0001-baseline.js';
 import { lowercaseCategoriesMigration } from './migrations/0002-categories-lowercase.js';
 import { multipleLabelsMigration } from './migrations/0003-multiple-labels.js';
+import { giftIdeasMigration } from './migrations/0004-gift-ideas.js';
+import { giftPurchasesMigration } from './migrations/0005-gift-purchases.js';
 
 export type Migration = {
   revision: string;
@@ -15,9 +17,9 @@ export type MigrationLogger = {
   warn?: (fields: Record<string, unknown>, message: string) => void;
 };
 
-export const MIGRATIONS: Migration[] = [baselineMigration, lowercaseCategoriesMigration, multipleLabelsMigration];
+export const MIGRATIONS: Migration[] = [baselineMigration, lowercaseCategoriesMigration, multipleLabelsMigration, giftIdeasMigration, giftPurchasesMigration];
 export const BASELINE_REVISION = baselineMigration.revision;
-export const TARGET_SCHEMA_REVISION = multipleLabelsMigration.revision;
+export const TARGET_SCHEMA_REVISION = giftPurchasesMigration.revision;
 
 const silentLogger: MigrationLogger = { info: () => {} };
 const revisionTableSql = `CREATE TABLE IF NOT EXISTS schema_revision (

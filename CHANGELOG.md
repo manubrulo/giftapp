@@ -10,6 +10,9 @@ Notable changes to GiftApp are recorded here for each release.
 - Profile avatars now offer 16 emoji choices.
 - SQLite schema revisions and ordered startup migrations. Existing databases are adopted and upgraded automatically before the server accepts requests.
 - Human-readable, single-line logs by default, with `LOG_FORMAT=json` available for machine-readable output.
+- Private gift ideas can be kept for other profiles, edited from profile or global views, and retained by recipient name if that profile is deleted.
+- Reserved gifts can be marked as bought, shown as purchased to other viewers, and reverted from Settings. Bought gifts deleted by their owner remain visible in other viewers' lists until reverted.
+- Wishlist gifts require a useful name, entered manually or resolved from their product URL.
 
 ### Changed
 

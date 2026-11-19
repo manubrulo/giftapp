@@ -17,8 +17,9 @@ test('fresh database migrates to the image target and repeat startup is a no-op'
   assert.equal(runMigrations(db, logger), TARGET_SCHEMA_REVISION);
   assert.equal(runMigrations(db, logger), TARGET_SCHEMA_REVISION);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'profiles'").get());
-  assert.equal(events.filter(event => event === 'Applying database migration').length, 3);
+  assert.equal(events.filter(event => event === 'Applying database migration').length, 5);
   assert.ok(events.includes('Database schema is current'));
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_purchases'").get());
   db.close();
 });
 
