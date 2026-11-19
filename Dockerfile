@@ -13,6 +13,7 @@ ENV NODE_ENV=production DATA_DIR=/data PORT=3000
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/dist dist
 COPY --from=build /app/src/server src/server
+COPY --from=build /app/src/shared src/shared
 COPY package.json .
 VOLUME /data
 EXPOSE 3000
