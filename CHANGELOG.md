@@ -2,7 +2,13 @@
 
 Notable changes to GiftApp are recorded here for each release.
 
-## 0.3.1 (Unreleased)
+## 0.3.2 (Unreleased)
+
+### Fixed
+
+- Include shared server modules in the runtime image so the server can resolve the label-color module at startup.
+
+## 0.3.1
 
 ### Added
 
