@@ -64,14 +64,13 @@
 
 # Release versioning
 
-- `package.json` is the version source (`0.3.0` at this checkout); Vite embeds it in the frontend.
-- Git history uses `v`-prefixed tags through `v0.3.0`; CI publishes a matching image tag for `v*` tags.
-- TODO: the repository does not document the version bump process, release-note process, or exact action that creates tags/releases. Do not infer these from the tags alone.
+- `package.json` is the version source (`0.3.2` at this checkout); Vite embeds it in the frontend.
+- Git history uses `v`-prefixed tags through `v0.3.1`; CI publishes a matching image tag for `v*` tags. To release, update `package.json` and `CHANGELOG.md`, merge the changes, then create and push the matching `v<version>` tag.
 
 # Changelog
 
-- No `CHANGELOG` file or changelog automation is present.
-- TODO: confirm whether releases require a changelog and, if so, the file format and section/entry rules before adding one.
+- `CHANGELOG.md` tracks release notes. Add a new version section for each release and keep the next unreleased section at the top.
+- No changelog automation is configured.
 
 # Conventions and working rules
 
