@@ -1,5 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useState } from 'react';
 import { api, appAssetUrl } from './api';
+import { allocateLabelColor } from '../shared/label-colors';
 
 declare const __APP_VERSION__: string;
 
@@ -8,17 +9,31 @@ type AdminProfile = Profile & { itemCount: number; createdAt?: string };
 type Family = { id: number; name: string; profileIds: number[] };
 type Notice = { id: number; itemTitle: string; deletedBy: string; createdAt: string };
 type Alternative = { id: number; url: string | null; title: string | null; price: number | null; imagePath: string | null; note: string | null };
+type Label = { name: string; color: string };
 type Item = {
   id: number; profileId: number; title: string; url: string | null; imagePath: string | null;
   price: number | null; currency: string; rating: number; notes: string | null; category: string | null;
-  alternatives: Alternative[]; reservedBy?: { id: number; name: string; avatar: string } | null;
+  labels: Label[]; alternatives: Alternative[]; reservedBy?: { id: number; name: string; avatar: string } | null;
+  boughtAt?: string | null; boughtBy?: { name: string; avatar: string } | null;
+  ownerDeleted?: boolean; deletedByOwnerName?: string | null;
 };
-type ItemDraft = { title: string; url: string; imagePath: string; price: string; currency: string; rating: number; notes: string; category: string };
-const AVATARS = ['🙂', '😎', '🦊', '🐼', '🌸', '🚀', '🎧', '🍕'];
+type PurchasedItem = Item & { ownerName: string; ownerAvatar: string };
+type ItemDraft = { title: string; url: string; imagePath: string; price: string; currency: string; rating: number; notes: string; labels: string[] };
+type GiftIdea = { id: number; recipientProfileId: number | null; recipientName: string; title: string; url: string | null; imagePath: string | null; price: number | null; currency: string; notes: string | null; labels: Label[] };
+const AVATARS = [
+  '🙂', '😎', '😍', '🤓', '🥳', '🤖', '👻', '🐶', '🐱', '🐼', '🦊', '🐸', '🦄', '🌸', '🚀', '🎧',
+];
 const btn = 'rounded-xl px-4 py-3 font-semibold active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ribbon disabled:opacity-50';
 const primary = `${btn} bg-ribbon text-white`;
 const input = 'w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base focus-visible:outline-2 focus-visible:outline-ribbon';
-const blankDraft = (): ItemDraft => ({ title: '', url: '', imagePath: '', price: '', currency: 'EUR', rating: 3, notes: '', category: '' });
+const labelColors: Record<string, string> = {
+  rose: 'bg-rose-100 text-rose-900', orange: 'bg-orange-100 text-orange-900', amber: 'bg-amber-100 text-amber-900',
+  lime: 'bg-lime-100 text-lime-900', emerald: 'bg-emerald-100 text-emerald-900', teal: 'bg-teal-100 text-teal-900',
+  sky: 'bg-sky-100 text-sky-900', blue: 'bg-blue-100 text-blue-900', indigo: 'bg-indigo-100 text-indigo-900',
+  violet: 'bg-violet-100 text-violet-900', fuchsia: 'bg-fuchsia-100 text-fuchsia-900', slate: 'bg-slate-200 text-slate-900',
+};
+const labelClass = (color: string) => labelColors[color] ?? labelColors.slate;
+const blankDraft = (): ItemDraft => ({ title: '', url: '', imagePath: '', price: '', currency: 'EUR', rating: 3, notes: '', labels: [] });
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 async function fitImageForUpload(file: File): Promise<File> {
@@ -110,15 +125,19 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
   const [viewingId, setViewingId] = useState(me.id);
+  const [myIdeasView, setMyIdeasView] = useState(false);
+  const [profileTab, setProfileTab] = useState<'requests' | 'ideas'>('requests');
   const [items, setItems] = useState<Item[]>([]);
+  const [ideas, setIdeas] = useState<GiftIdea[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Item | null | false>(false);
+  const [editingIdea, setEditingIdea] = useState<GiftIdea | null | false>(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [reload, setReload] = useState(0);
-  const ownList = viewingId === me.id;
+  const ownList = viewingId === me.id && !myIdeasView;
   const viewing = profiles.find(p => p.id === viewingId) ?? me;
   const refreshProfiles = () => api<Profile[]>('/profiles/visible').then(data => {
     setProfiles(data);
@@ -133,10 +152,10 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
   useEffect(() => {
     let live = true;
     setBusy(true); setError('');
-    const route = ownList ? '/items/mine' : `/profiles/${viewingId}/items`;
-    api<Item[]>(route).then(data => { if (live) setItems(data); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
+    const route = myIdeasView ? '/ideas/mine' : profileTab === 'ideas' && !ownList ? `/profiles/${viewingId}/ideas` : ownList ? '/items/mine' : `/profiles/${viewingId}/items`;
+    api<any[]>(route).then(data => { if (live) (myIdeasView || (!ownList && profileTab === 'ideas')) ? setIdeas(data) : setItems(data); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
-  }, [ownList, viewingId, reload]);
+  }, [ownList, viewingId, reload, myIdeasView, profileTab]);
   useEffect(() => {
     setSelectionMode(false);
     setSelectedIds([]);
@@ -152,11 +171,19 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     if (!window.confirm(`¿Borrar «${item.title}»?`)) return;
     try { await api(`/items/${item.id}`, undefined, 'DELETE'); refresh(); } catch (e) { setError(errorText(e)); }
   };
+  const removeIdea = async (idea: GiftIdea) => {
+    if (!window.confirm(`¿Borrar la idea «${idea.title}»?`)) return;
+    try { await api(`/ideas/${idea.id}`, undefined, 'DELETE'); refresh(); } catch (e) { setError(errorText(e)); }
+  };
   const toggleClaim = async (item: Item) => {
     try { await api(`/items/${item.id}/claim`, {}); refresh(); } catch (e) { setError(errorText(e)); }
   };
   const cancelClaim = async (item: Item) => {
     try { await api(`/items/${item.id}/claim`, undefined, 'DELETE'); refresh(); } catch (e) { setError(errorText(e)); }
+  };
+  const markBought = async (item: Item) => {
+    if (!window.confirm(`¿Marcar «${item.title}» como comprado? Puedes revertirlo desde Ajustes → Regalos comprados.`)) return;
+    try { await api(`/items/${item.id}/purchase`, {}); refresh(); } catch (e) { setError(errorText(e)); }
   };
   const dismissNotice = async (notice: Notice) => {
     try {
@@ -181,10 +208,12 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
     </header>
     {notices.length > 0 && <section aria-label="Avisos" className="mb-6 space-y-2">{notices.map(notice => <div key={notice.id} role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-700/20 bg-amber-100 p-4 text-amber-950"><p>{notice.deletedBy} ha eliminado «{notice.itemTitle}» de su lista.</p><button className={`${btn} bg-paper`} onClick={() => dismissNotice(notice)}>Descartar</button></div>)}</section>}
     <nav aria-label="Listas" className="mb-7 flex gap-2 overflow-x-auto pb-2">
-      <button onClick={() => setViewingId(me.id)} aria-pressed={ownList} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${ownList ? 'bg-ink text-white' : 'bg-moss'}`}>Mi lista</button>
-      {profiles.filter(p => p.id !== me.id).map(p => <button key={p.id} onClick={() => setViewingId(p.id)} aria-pressed={viewingId === p.id} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${viewingId === p.id ? 'bg-ink text-white' : 'bg-moss'}`}>{p.avatar} {p.name}</button>)}
+      <button onClick={() => { setMyIdeasView(false); setViewingId(me.id); }} aria-pressed={ownList} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${ownList ? 'bg-ink text-white' : 'bg-moss'}`}>Mi lista</button>
+      {profiles.filter(p => p.id !== me.id).map(p => <button key={p.id} onClick={() => { setMyIdeasView(false); setProfileTab('requests'); setViewingId(p.id); }} aria-pressed={!myIdeasView && viewingId === p.id} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${!myIdeasView && viewingId === p.id ? 'bg-ink text-white' : 'bg-moss'}`}>{p.avatar} {p.name}</button>)}
+      <button onClick={() => setMyIdeasView(true)} aria-pressed={myIdeasView} className={`shrink-0 rounded-full px-4 py-2 font-semibold ${myIdeasView ? 'bg-ink text-white' : 'bg-moss'}`}>Mis ideas</button>
     </nav>
-    <div className="home-summary mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
+    {!myIdeasView && !ownList && <nav aria-label="Perfil" className="mb-5 flex gap-2 border-b border-ink/15"><button className={`border-b-2 px-3 py-2 font-semibold ${profileTab === 'requests' ? 'border-ribbon' : 'border-transparent opacity-60'}`} aria-pressed={profileTab === 'requests'} onClick={() => setProfileTab('requests')}>Regalos</button><button className={`border-b-2 px-3 py-2 font-semibold ${profileTab === 'ideas' ? 'border-ribbon' : 'border-transparent opacity-60'}`} aria-pressed={profileTab === 'ideas'} onClick={() => setProfileTab('ideas')}>Mis ideas</button></nav>}
+    <div className="home-summary mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-bold">{myIdeasView ? 'Mis ideas' : profileTab === 'ideas' && !ownList ? `Ideas para ${viewing.name}` : ownList ? 'Mis deseos' : `Deseos de ${viewing.name}`}</h2><p className="mt-1 opacity-70">{myIdeasView ? 'Ideas privadas agrupadas por persona.' : profileTab === 'ideas' && !ownList ? 'Solo tú puedes ver estas ideas.' : ownList ? 'Comparte tu lista y deja que el resto elija una sorpresa.' : 'Elige algo que le haga ilusión.'}</p></div>
       <div className="home-list-actions flex flex-wrap gap-2"><button type="button" className={`${btn} bg-moss`} onClick={refreshAll} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button>
       {ownList && <>
         {selectionMode ? <>
@@ -196,20 +225,22 @@ function Home({ me, onMeUpdated, onLogout }: { me: Profile; onMeUpdated: (p: Pro
           <button className={primary} onClick={() => setEditing(null)}>＋ Añadir deseo</button>
         </>}
       </>}
+      {!myIdeasView && !ownList && profileTab === 'ideas' && <button className={primary} onClick={() => setEditingIdea(null)}>＋ Añadir idea</button>}
       </div>
     </div>
     {error && <p role="alert" className="mb-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
-    {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando deseos…</p> : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
-      <div className="wishlist-grid grid gap-4">{items.map(item => <article key={item.id} className="item-card rounded-2xl bg-moss">
-        <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onRefresh={refresh} />
+    {busy ? <p role="status" className="py-8 text-center opacity-70">Cargando…</p> : myIdeasView || profileTab === 'ideas' && !ownList ? (ideas.length === 0 ? <div className="rounded-2xl bg-moss p-6"><p className="text-xl font-semibold">Aún no tienes ideas</p><p className="mt-1 opacity-70">Guarda aquí regalos que se te ocurran.</p></div> : myIdeasView ? <div className="space-y-6">{Object.entries(ideas.reduce<Record<string, GiftIdea[]>>((groups, idea) => { (groups[idea.recipientName] ??= []).push(idea); return groups; }, {})).map(([recipient, entries]) => <section key={recipient}><h3 className="mb-3 text-xl font-bold">{recipient}{entries.every(i => !i.recipientProfileId) && <span className="ml-2 text-sm font-normal opacity-70">(perfil eliminado)</span>}</h3><div className="wishlist-grid grid gap-4">{entries.map(idea => <article key={idea.id} className="item-card rounded-2xl bg-moss"><IdeaCard idea={idea} onEdit={() => setEditingIdea(idea)} onDelete={() => void removeIdea(idea)} /></article>)}</div></section>)}</div> : <div className="wishlist-grid grid gap-4">{ideas.map(idea => <article key={idea.id} className="item-card rounded-2xl bg-moss"><IdeaCard idea={idea} onEdit={() => setEditingIdea(idea)} onDelete={() => void removeIdea(idea)} /></article>)}</div>) : items.length === 0 ? <div className="rounded-2xl bg-moss p-6 sm:p-8"><p className="text-xl font-semibold">{ownList ? 'Tu lista está vacía' : 'Esta lista está vacía'}</p><p className="mt-1 opacity-70">{ownList ? 'Pega un enlace y añade aquí tu primer deseo.' : 'Todavía no hay deseos para mostrar.'}</p></div> :
+      <div className="wishlist-grid grid gap-4">{items.map(item => <article key={item.id} className="item-card rounded-2xl bg-moss" style={item.boughtAt ? { opacity: 0.9, filter: 'saturate(0.8)' } : undefined}>
+        <ItemCard item={item} ownList={ownList} selectionMode={selectionMode} selected={selectedIds.includes(item.id)} onToggleSelected={() => toggleSelected(item.id)} me={me} onEdit={() => setEditing(item)} onDelete={() => removeItem(item)} onClaim={() => toggleClaim(item)} onCancelClaim={() => cancelClaim(item)} onMarkBought={() => markBought(item)} onRefresh={refresh} />
       </article>)}</div>}
     {editing !== false && <ItemEditor item={editing} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />}
-    {settingsOpen && <SettingsDialog me={me} onClose={() => setSettingsOpen(false)} onMeUpdated={onMeUpdated} onProfilesChanged={() => { void refreshProfiles(); }} />}
+    {editingIdea !== false && <IdeaEditor idea={editingIdea} recipientId={viewingId} onClose={() => setEditingIdea(false)} onSaved={() => { setEditingIdea(false); refresh(); }} />}
+    {settingsOpen && <SettingsDialog me={me} onClose={() => setSettingsOpen(false)} onMeUpdated={onMeUpdated} onProfilesChanged={() => { void refreshProfiles(); }} onPurchasesChanged={refresh} />}
   </Shell>;
 }
 
-function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
-  me: Profile; onClose: () => void; onMeUpdated: (p: Profile) => void; onProfilesChanged: () => void;
+function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged, onPurchasesChanged }: {
+  me: Profile; onClose: () => void; onMeUpdated: (p: Profile) => void; onProfilesChanged: () => void; onPurchasesChanged: () => void;
 }) {
   const [name, setName] = useState(me.name);
   const [avatar, setAvatar] = useState(me.avatar);
@@ -222,6 +253,7 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
   const [families, setFamilies] = useState<Family[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminSection, setAdminSection] = useState<'users' | 'families'>('users');
+  const [settingsSection, setSettingsSection] = useState<'profile' | 'purchases'>('profile');
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError(''); setNotice('');
     try {
@@ -270,6 +302,11 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
   return <div className="fixed inset-0 z-20 overflow-y-auto bg-ink/50 p-4" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="settings-title" className="modal-panel mx-auto my-5 max-w-2xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
       <div className="mb-5 flex items-center justify-between gap-3"><h2 id="settings-title" className="text-2xl font-bold">Ajustes</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
+      <nav aria-label="Categorías de ajustes" className="mb-5 flex gap-2 border-b border-ink/15">
+        <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${settingsSection === 'profile' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={settingsSection === 'profile'} onClick={() => setSettingsSection('profile')}>Perfil</button>
+        <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${settingsSection === 'purchases' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={settingsSection === 'purchases'} onClick={() => setSettingsSection('purchases')}>Regalos comprados</button>
+      </nav>
+      {settingsSection === 'profile' && <>
       <form onSubmit={saveProfile} className="space-y-4">
         <h3 className="text-lg font-bold">Mi perfil</h3>
         <label className="block space-y-1"><span className="font-semibold">Nombre</span><input className={input} value={name} onChange={e => setName(e.target.value)} maxLength={30} required /></label>
@@ -279,7 +316,9 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
         {notice && <p role="status" className="text-sm text-green-800">{notice}</p>}
         <button className={primary} disabled={saving}>{saving ? 'Guardando…' : 'Guardar perfil'}</button>
       </form>
-      {me.role === 'admin' && <section className="mt-8 border-t border-ink/15 pt-6">
+      </>}
+      {settingsSection === 'purchases' && <PurchasedGiftsSection onItemsChanged={onPurchasesChanged} />}
+      {settingsSection === 'profile' && me.role === 'admin' && <section className="mt-8 border-t border-ink/15 pt-6">
         <nav aria-label="Administración" className="mb-5 flex gap-2 border-b border-ink/15">
           <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${adminSection === 'users' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={adminSection === 'users'} onClick={() => setAdminSection('users')}>Usuarios</button>
           <button type="button" className={`border-b-2 px-3 py-2 font-semibold ${adminSection === 'families' ? 'border-ribbon text-ink' : 'border-transparent opacity-60'}`} aria-pressed={adminSection === 'families'} onClick={() => setAdminSection('families')}>Familias</button>
@@ -295,6 +334,36 @@ function SettingsDialog({ me, onClose, onMeUpdated, onProfilesChanged }: {
       {error && <p role="alert" className="mt-4 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
     </section>
   </div>;
+}
+
+function PurchasedGiftsSection({ onItemsChanged }: { onItemsChanged: () => void }) {
+  const [items, setItems] = useState<PurchasedItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let live = true;
+    api<PurchasedItem[]>('/purchases/mine').then(data => { if (live) setItems(data); })
+      .catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, []);
+  const revert = async (item: PurchasedItem) => {
+    if (!window.confirm(`¿Revertir la compra de «${item.title}»? Se quitará la reserva${item.ownerDeleted ? ' y el regalo eliminado desaparecerá del historial' : ''}.`)) return;
+    setError('');
+    try {
+      await api(`/purchases/${item.id}`, undefined, 'DELETE');
+      setItems(current => current.filter(entry => entry.id !== item.id));
+      onItemsChanged();
+    } catch (e) { setError(errorText(e)); }
+  };
+  return <section aria-labelledby="purchased-gifts-title" className="mt-8 border-t border-ink/15 pt-6">
+    <h3 id="purchased-gifts-title" className="text-lg font-bold">Regalos comprados</h3>
+    <p className="mb-3 text-sm opacity-70">Puedes revertir una compra desde aquí. Al hacerlo, se libera la reserva.</p>
+    {error && <p role="alert" className="mb-3 rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
+    {loading ? <p role="status" className="py-3 opacity-70">Cargando…</p> : items.length === 0 ? <p className="py-3 opacity-70">Aún no has marcado regalos como comprados.</p> : <ul className="space-y-2">{items.map(item => <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-moss p-3">
+      <div><p className="font-semibold">{item.ownerAvatar} {item.title}</p><p className="text-sm opacity-70">Para {item.ownerName}{item.ownerDeleted ? ` · Eliminado por ${item.deletedByOwnerName || item.ownerName}` : ''}</p></div>
+      <button type="button" className={`${btn} bg-paper`} onClick={() => void revert(item)}>Revertir compra</button>
+    </li>)}</ul>}
+  </section>;
 }
 
 function FamilyManager({ families, profiles, onChanged, onError }: {
@@ -360,9 +429,9 @@ function AdminProfileRow({ profile, families, self, onSave, onDelete }: {
   </form>;
 }
 
-function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me, onEdit, onDelete, onClaim, onCancelClaim, onRefresh }: {
+function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me, onEdit, onDelete, onClaim, onCancelClaim, onMarkBought, onRefresh }: {
   item: Item; ownList: boolean; selectionMode: boolean; selected: boolean; onToggleSelected: () => void; me: Profile;
-  onEdit: () => void; onDelete: () => void; onClaim: () => void; onCancelClaim: () => void; onRefresh: () => void;
+  onEdit: () => void; onDelete: () => void; onClaim: () => void; onCancelClaim: () => void; onMarkBought: () => void; onRefresh: () => void;
 }) {
   const [altOpen, setAltOpen] = useState(false);
   const [altUrl, setAltUrl] = useState('');
@@ -388,27 +457,114 @@ function ItemCard({ item, ownList, selectionMode, selected, onToggleSelected, me
   };
   return <>
     {ownList && selectionMode && <label className="flex cursor-pointer items-center gap-3 bg-paper px-4 py-3 font-semibold"><input type="checkbox" className="size-5 accent-ribbon" checked={selected} onChange={onToggleSelected} />Seleccionar este deseo</label>}
-    {item.imagePath && <div className="item-card-image"><img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" /></div>}
+    {item.imagePath && <div className="item-card-image"><img src={appAssetUrl(item.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" style={item.boughtAt ? { filter: 'saturate(0.6)', opacity: 0.88 } : undefined} loading="lazy" /></div>}
     <div className={`item-card-content p-5 ${selected ? 'ring-2 ring-inset ring-ribbon' : ''}`}>
-      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold leading-tight">{item.title}</h3>{item.category && <span className="mt-2 inline-flex rounded-full bg-paper px-3 py-1 text-sm font-medium">{item.category}</span>}</div>
+      <div className="item-card-heading flex items-start justify-between gap-3"><div><h3 className={`text-xl font-bold leading-tight ${item.boughtAt ? 'line-through decoration-ribbon decoration-2' : ''}`}>{item.title}</h3>{item.labels.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{item.labels.map(label => <span key={label.name} className={`inline-flex rounded-full px-3 py-1 text-sm font-medium ${labelClass(label.color)}`}>{label.name}</span>)}</div>}</div>
         <span className="shrink-0 text-ribbon" aria-label={`Valoración ${item.rating} de 5`}>{'★'.repeat(item.rating)}<span className="opacity-30">{'★'.repeat(5 - item.rating)}</span></span>
       </div>
       {item.price != null && <p className="mt-3 text-lg font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(item.price)}</p>}
       {item.notes && <p className="mt-3 whitespace-pre-wrap">{item.notes}</p>}
       {item.url && <a className="mt-3 inline-block font-semibold underline decoration-ribbon underline-offset-4" href={item.url} target="_blank" rel="noreferrer">Ver enlace ↗</a>}
       {item.alternatives.length > 0 && <div className="mt-4 border-t border-ink/15 pt-3"><p className="mb-2 font-semibold">También me valen</p><ul className="space-y-2">{item.alternatives.map(alt => <li key={alt.id} className="flex items-start justify-between gap-2 text-sm"><div>{alt.url ? <a className="underline" href={alt.url} target="_blank" rel="noreferrer">{alt.title || alt.url}</a> : <span>{alt.title}</span>}{alt.price != null && <span className="ml-2 font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: item.currency || 'EUR' }).format(alt.price)}</span>}{alt.note && <p className="opacity-70">{alt.note}</p>}</div>{ownList && <div className="flex gap-2"><button className="text-ink underline" onClick={() => { setEditingAlt(alt); setAltUrl(alt.url ?? ''); setAltTitle(alt.title ?? ''); setAltPrice(alt.price == null ? '' : String(alt.price)); setAltNote(alt.note ?? ''); setAltOpen(true); }}>Editar</button><button className="text-ribbon" onClick={() => removeAlternative(alt)} aria-label={`Quitar ${alt.title || 'alternativa'}`}>×</button></div>}</li>)}</ul></div>}
-      {ownList ? !selectionMode && <div className="item-card-actions mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : <div className="reservation-row mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
-        {item.reservedBy ? myClaim ? <button className={`${btn} bg-moss`} onClick={onCancelClaim}>Quitar mi reserva</button> : null : <button className={primary} onClick={onClaim}>Lo compro</button>}</div>}
+      {!ownList && item.ownerDeleted && <p className="mt-3 rounded-xl bg-paper/70 p-3 text-sm opacity-80">Eliminado por {item.deletedByOwnerName || 'el dueño'}.</p>}
+      {ownList ? !selectionMode && <div className="item-card-actions mt-4 flex flex-wrap gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} bg-paper`} onClick={() => setAltOpen(v => !v)}>{altOpen ? 'Cerrar' : '＋ Alternativa'}</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div> : item.boughtAt ? <div role="status" className="reservation-row mt-4 flex items-center gap-3 rounded-xl bg-paper/70 p-3 font-semibold">{item.boughtBy?.avatar ?? '🎁'} Comprado por {item.boughtBy?.name ?? 'otra persona'}</div> : <div className="reservation-row mt-4 flex items-center justify-between gap-3 rounded-xl bg-paper/70 p-3">{item.reservedBy ? <p className="font-semibold">{item.reservedBy.avatar} Reservado por {item.reservedBy.name}</p> : <p className="opacity-70">¿Quieres comprarlo?</p>}
+        {item.reservedBy ? myClaim ? <div className="flex flex-wrap gap-2"><button className={`${btn} bg-moss`} onClick={onCancelClaim}>Quitar mi reserva</button><button className={`${btn} bg-ribbon text-white`} onClick={onMarkBought}>Comprado</button></div> : null : <button className={primary} onClick={onClaim}>Lo compro</button>}</div>}
       {altOpen && <form onSubmit={addAlternative} className="mt-4 space-y-2 rounded-xl bg-paper p-3"><p className="font-semibold">{editingAlt ? 'Editar alternativa' : 'Añadir alternativa'}</p><input className={input} placeholder="Enlace" type="url" value={altUrl} onChange={e => setAltUrl(e.target.value)} /><input className={input} placeholder="Nombre (opcional)" value={altTitle} onChange={e => setAltTitle(e.target.value)} /><input className={input} placeholder="Precio (opcional)" type="text" inputMode="decimal" value={altPrice} onChange={e => setAltPrice(e.target.value)} /><input className={input} placeholder="Nota (opcional)" value={altNote} onChange={e => setAltNote(e.target.value)} />{localError && <p role="alert" className="text-sm text-ribbon">{localError}</p>}<button className={`${btn} bg-ink text-white`}>{editingAlt ? 'Guardar cambios' : 'Guardar alternativa'}</button></form>}
       {localError && !altOpen && <p role="alert" className="mt-2 text-sm text-ribbon">{localError}</p>}
     </div>
   </>;
 }
 
-function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: () => void; onSaved: () => void }) {
+function IdeaCard({ idea, onEdit, onDelete }: { idea: GiftIdea; onEdit: () => void; onDelete: () => void }) {
+  return <div className="item-card-content p-5">
+    {idea.imagePath && <div className="-mx-5 -mt-5 mb-4"><img src={appAssetUrl(idea.imagePath)} alt="" className="h-48 w-full bg-white object-contain p-3" loading="lazy" /></div>}
+    <div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-bold">{idea.title}</h3>{idea.labels.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{idea.labels.map(label => <span key={label.name} className={`rounded-full px-3 py-1 text-sm font-medium ${labelClass(label.color)}`}>{label.name}</span>)}</div>}</div></div>
+    {idea.price != null && <p className="mt-3 text-lg font-semibold">{new Intl.NumberFormat('es', { style: 'currency', currency: idea.currency || 'EUR' }).format(idea.price)}</p>}
+    {idea.notes && <p className="mt-3 whitespace-pre-wrap">{idea.notes}</p>}{idea.url && <a className="mt-3 inline-block font-semibold underline decoration-ribbon underline-offset-4" href={idea.url} target="_blank" rel="noreferrer">Ver enlace ↗</a>}
+    <div className="mt-4 flex gap-2"><button className={`${btn} bg-paper`} onClick={onEdit}>Editar</button><button className={`${btn} text-ribbon`} onClick={onDelete}>Borrar</button></div>
+  </div>;
+}
+
+function LabelPicker({ value, options, onChange }: { value: string[]; options: Label[]; onChange: (labels: string[]) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const normalizedQuery = query.trim().toLowerCase();
+  const selectedNames = new Set(value);
+  const matches = options.filter(label => !selectedNames.has(label.name) && (!normalizedQuery || label.name.includes(normalizedQuery)));
+  const exactMatch = options.some(label => label.name === normalizedQuery);
+  const createNew = !!normalizedQuery && !exactMatch && !selectedNames.has(normalizedQuery);
+  const usedColors = new Set(options.map(label => label.color));
+  const selectedLabels = value.map(name => {
+    const existing = options.find(label => label.name === name);
+    if (existing) return existing;
+    const color = allocateLabelColor(name, usedColors);
+    usedColors.add(color);
+    return { name, color };
+  });
+  const add = (name: string) => {
+    const normalized = name.trim().toLowerCase();
+    if (normalized && !selectedNames.has(normalized)) onChange([...value, normalized]);
+    setQuery('');
+    setActiveIndex(-1);
+    setOpen(true);
+  };
+  const choices = [
+    ...matches.map(label => ({ ...label, create: false })),
+    ...(createNew ? [{ name: normalizedQuery, color: allocateLabelColor(normalizedQuery, usedColors), create: true }] : []),
+  ];
+  return <div className="space-y-1">
+    <span className="font-semibold">Etiquetas</span>
+    <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
+      <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-ink/20 bg-white px-3 py-2 focus-within:outline-2 focus-within:outline-ribbon">
+        {selectedLabels.map(label => <span key={label.name} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium ${labelClass(label.color)}`}>
+          {label.name}<button type="button" className="rounded-full px-1 text-xs leading-none opacity-70 hover:bg-black/10 hover:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-current" aria-label={`Quitar etiqueta ${label.name}`} onClick={() => onChange(value.filter(name => name !== label.name))}>×</button>
+        </span>)}
+        <input
+          className="min-w-28 flex-1 border-0 bg-transparent px-1 py-1 text-base outline-none"
+          value={query}
+          maxLength={60}
+          placeholder={value.length ? '' : 'Escribe o elige etiquetas'}
+          role="combobox"
+          aria-label="Añadir etiquetas"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls="item-label-options"
+          onFocus={() => setOpen(true)}
+          onChange={event => { setQuery(event.target.value.toLowerCase()); setOpen(true); setActiveIndex(-1); }}
+          onKeyDown={event => {
+            if (event.key === 'Backspace' && !query && value.length) {
+              event.preventDefault(); onChange(value.slice(0, -1));
+            } else if (event.key === 'ArrowDown') {
+              event.preventDefault(); setOpen(true); setActiveIndex(index => Math.min(index + 1, choices.length - 1));
+            } else if (event.key === 'ArrowUp') {
+              event.preventDefault(); setOpen(true); setActiveIndex(index => Math.max(index - 1, 0));
+            } else if (event.key === 'Enter' || event.key === ',') {
+              event.preventDefault();
+              const choice = open ? choices[activeIndex] : undefined;
+              add(choice?.name ?? (createNew ? normalizedQuery : matches[0]?.name ?? normalizedQuery));
+            } else if (event.key === 'Escape') setOpen(false);
+          }}
+        />
+        <button type="button" className="px-2 text-ink/70" aria-label="Mostrar etiquetas sugeridas" aria-expanded={open} onClick={() => setOpen(show => !show)}>▾</button>
+      </div>
+      {open && <ul id="item-label-options" role="listbox" aria-label="Etiquetas sugeridas" className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border border-ink/15 bg-white p-2 shadow-lg">
+        {choices.length ? choices.map((choice, index) => <li key={`${choice.create ? 'new' : 'existing'}-${choice.name}`}>
+          <button type="button" role="option" aria-selected={index === activeIndex} onMouseDown={event => event.preventDefault()} onClick={() => add(choice.name)} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-moss ${index === activeIndex ? 'bg-moss/70' : ''}`}>
+            <span className={`rounded-md px-2 py-1 text-sm ${labelClass(choice.color)}`}>{choice.name}</span>
+            {choice.create && <span className="text-sm opacity-70">Crear etiqueta</span>}
+          </button>
+        </li>) : <li className="px-3 py-2 text-sm opacity-60">No hay más sugerencias</li>}
+      </ul>}
+    </div>
+    <span className="block text-sm opacity-70">Escribe y pulsa Enter para añadir; puedes elegir varias.</span>
+  </div>;
+}
+
+function ItemEditor({ item, onClose, onSaved, ideaRecipientId }: { item: Item | null; onClose: () => void; onSaved: () => void; ideaRecipientId?: number }) {
   const [draft, setDraft] = useState<ItemDraft>(() => item ? {
     title: item.title, url: item.url ?? '', imagePath: item.imagePath ?? '', price: item.price == null ? '' : String(item.price),
-    currency: item.currency || 'EUR', rating: item.rating, notes: item.notes ?? '', category: item.category ?? '',
+    currency: item.currency || 'EUR', rating: item.rating, notes: item.notes ?? '', labels: item.labels.map(label => label.name),
   } : blankDraft());
   const [scraping, setScraping] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -419,8 +575,8 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   const [imageDragOver, setImageDragOver] = useState(false);
   const [error, setError] = useState('');
   const [scrapeNotice, setScrapeNotice] = useState('');
-  const [categories, setCategories] = useState<string[]>([]);
-  useEffect(() => { api<string[]>('/categories').then(setCategories).catch(() => {}); }, []);
+  const [labels, setLabels] = useState<Label[]>([]);
+  useEffect(() => { api<Label[]>('/labels').then(setLabels).catch(() => {}); }, []);
   const set = (key: keyof ItemDraft, value: string | number) => setDraft(d => ({ ...d, [key]: value }));
   const scrape = async () => {
     setError(''); setScrapeNotice(''); setScraping(true);
@@ -463,14 +619,19 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
   };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError('');
-    const payload = { ...draft, price: draft.price.trim() === '' ? null : draft.price, imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null, category: draft.category || null };
-    try { if (item) await api(`/items/${item.id}`, payload, 'PUT'); else await api('/items', payload); onSaved(); }
+    const payload = { ...draft, price: draft.price.trim() === '' ? null : draft.price, imagePath: draft.imagePath || null, url: draft.url || null, notes: draft.notes || null };
+    try {
+      if (ideaRecipientId !== undefined) {
+        if (item) await api(`/ideas/${item.id}`, payload, 'PUT'); else await api(`/profiles/${ideaRecipientId}/ideas`, payload);
+      } else if (item) await api(`/items/${item.id}`, payload, 'PUT'); else await api('/items', payload);
+      onSaved();
+    }
     catch (e) { setError(errorText(e)); }
     finally { setSaving(false); }
   };
   return <div className="fixed inset-0 z-10 overflow-y-auto bg-ink/50 p-4" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="editor-title" className="modal-panel mx-auto my-5 max-w-xl rounded-2xl bg-paper p-5 shadow-xl sm:p-7">
-      <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{imagePaneOpen ? 'Añadir imagen' : item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
+      <div className="mb-5 flex items-center justify-between gap-3"><h2 id="editor-title" className="text-2xl font-bold">{imagePaneOpen ? 'Añadir imagen' : ideaRecipientId !== undefined ? item ? 'Editar idea' : 'Añadir una idea' : item ? 'Editar deseo' : 'Añadir un deseo'}</h2><button className={`${btn} bg-moss`} onClick={onClose} aria-label="Cerrar">×</button></div>
       {imagePaneOpen ? <div className="space-y-4">
         <div onDragOver={e => { e.preventDefault(); setImageDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setImageDragOver(false); }} onDrop={e => { e.preventDefault(); setImageDragOver(false); const file = Array.from(e.dataTransfer.files).find(candidate => candidate.type.startsWith('image/')); if (file) void uploadImage(file); }} className={`rounded-2xl border-2 border-dashed p-6 text-center transition-colors sm:p-8 ${imageDragOver ? 'border-ribbon bg-ribbon/10' : 'border-ink/30 bg-white/40'}`}>
           <p className="mb-4 text-lg font-semibold">Arrastra aquí la foto</p>
@@ -490,14 +651,14 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
       {draft.imagePath && <img src={appAssetUrl(draft.imagePath)} alt="Vista previa del producto" className="mb-3 h-40 w-full rounded-xl bg-white object-contain p-2" />}
       <button type="button" className={`${btn} mb-4 bg-moss`} onClick={() => { setError(''); setImagePaneOpen(true); }}>{draft.imagePath ? 'Cambiar imagen' : 'Añadir imagen'}</button>
       <form onSubmit={save} className="space-y-3">
-        <label className="block space-y-1"><span className="font-semibold">Nombre (opcional)</span><input className={input} placeholder="Se usará el enlace si lo dejas vacío" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /></label>
+        <label className="block space-y-1"><span className="font-semibold">Nombre del regalo</span><input className={input} placeholder="Escribe el nombre o usa Buscar con un enlace" value={draft.title} onChange={e => set('title', e.target.value)} maxLength={200} /><span className="block text-sm opacity-70">Es obligatorio. Puedes escribirlo, obtenerlo con «Buscar» o usar un nombre descriptivo del enlace.</span></label>
         {item && <div className="editor-url-row flex items-end gap-2"><label className="block min-w-0 flex-1 space-y-1"><span className="font-semibold">Enlace</span><input className={input} type="url" value={draft.url} onChange={e => set('url', e.target.value)} /></label><button type="button" className={`${btn} bg-ink text-white`} disabled={!draft.url || scraping} onClick={scrape}>{scraping ? 'Buscando…' : 'Actualizar datos'}</button></div>}
-        <div className="price-grid grid grid-cols-2 gap-3"><label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /></label><label className="block space-y-1"><span className="font-semibold">Moneda</span><input className={input} value={draft.currency} onChange={e => set('currency', e.target.value.toUpperCase().slice(0, 3))} maxLength={3} /></label></div>
-        <label className="block space-y-1"><span className="font-semibold">Categoría</span><input className={input} list="gift-category-options" placeholder="Elige una o escribe una nueva" value={draft.category} onChange={e => set('category', e.target.value)} maxLength={60} /><datalist id="gift-category-options">{categories.map(category => <option key={category} value={category} />)}</datalist></label>
-        <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>
+        <label className="block space-y-1"><span className="font-semibold">Precio</span><input className={input} inputMode="decimal" type="text" value={draft.price} onChange={e => set('price', e.target.value)} /><span className="block text-sm opacity-70">En euros por defecto; al pegar un enlace intentaremos detectar la moneda.</span></label>
+        <LabelPicker value={draft.labels} options={labels} onChange={next => setDraft(draftState => ({ ...draftState, labels: next }))} />
+        {ideaRecipientId === undefined && <fieldset><legend className="mb-1 font-semibold">¿Cuánto lo quieres?</legend><div className="flex gap-1" role="radiogroup" aria-label="Valoración">{[1, 2, 3, 4, 5].map(n => <button key={n} type="button" role="radio" aria-checked={draft.rating === n} aria-label={`${n} de 5`} onClick={() => set('rating', n)} className={`rounded px-2 py-1 text-2xl ${n <= draft.rating ? 'text-ribbon' : 'opacity-30'}`}>★</button>)}</div></fieldset>}
         <label className="block space-y-1"><span className="font-semibold">Notas</span><textarea className={input} rows={3} value={draft.notes} onChange={e => set('notes', e.target.value)} maxLength={2000} /></label>
         {error && <p role="alert" className="rounded-xl bg-ribbon/10 p-3 text-ribbon">{error}</p>}
-        <div className="flex gap-3 pt-2"><button type="button" className={`${btn} bg-moss`} onClick={onClose}>Cancelar</button><button className={`${primary} flex-1`} disabled={saving || (!draft.title.trim() && !draft.url.trim())}>{saving ? 'Guardando…' : 'Guardar deseo'}</button></div>
+        <div className="flex gap-3 pt-2"><button type="button" className={`${btn} bg-moss`} onClick={onClose}>Cancelar</button><button className={`${primary} flex-1`} disabled={saving || (!draft.title.trim() && !draft.url.trim())}>{saving ? 'Guardando…' : ideaRecipientId !== undefined ? 'Guardar idea' : 'Guardar deseo'}</button></div>
       </form>
       </>}
     </section>
@@ -505,3 +666,12 @@ function ItemEditor({ item, onClose, onSaved }: { item: Item | null; onClose: ()
 }
 
 function errorText(error: unknown) { return error instanceof Error ? error.message : 'Algo ha fallado'; }
+
+function IdeaEditor({ idea, recipientId, onClose, onSaved }: { idea: GiftIdea | null; recipientId: number; onClose: () => void; onSaved: () => void }) {
+  const item: Item | null = idea ? {
+    id: idea.id, profileId: 0, title: idea.title, url: idea.url, imagePath: idea.imagePath,
+    price: idea.price, currency: idea.currency, rating: 3, notes: idea.notes,
+    category: null, labels: idea.labels, alternatives: [], reservedBy: null,
+  } : null;
+  return <ItemEditor item={item} ideaRecipientId={recipientId} onClose={onClose} onSaved={onSaved} />;
+}

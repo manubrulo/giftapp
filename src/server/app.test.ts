@@ -127,15 +127,129 @@ test('families restrict wishlist and reservation access, support overlapping mem
   assert.equal((await app.inject({ method: 'GET', url: `/api/items/mine`, headers: { cookie: owner.cookie } })).json()[0].id, wish.id);
 });
 
-test('categories are suggested globally and newly typed labels are saved on wishes', async () => {
+test('bought gifts stay private from their owner, can be reverted from purchase history, and survive owner deletion', async () => {
+  const owner = await profile('Dueña');
+  const buyer = await profile('Compradora');
+  const laterBuyer = await profile('Otra compradora');
+  const gift = await item(owner.cookie, 'Lámpara bonita');
+  const headers = (cookie: string) => ({ cookie });
+
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: headers(owner.cookie), payload: {} })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: headers(buyer.cookie), payload: {} })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/claim`, headers: headers(buyer.cookie), payload: {} })).statusCode, 201);
+  const bought = await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: headers(buyer.cookie), payload: {} });
+  assert.equal(bought.statusCode, 201, bought.body);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: headers(buyer.cookie), payload: {} })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/claim`, headers: headers(laterBuyer.cookie), payload: {} })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/items/${gift.id}/claim`, headers: headers(buyer.cookie) })).statusCode, 409);
+
+  const ownerItems = await app.inject({ method: 'GET', url: '/api/items/mine', headers: headers(owner.cookie) });
+  assert.equal(ownerItems.json()[0].boughtAt, undefined);
+  assert.equal(ownerItems.json()[0].boughtBy, undefined);
+  const visible = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: headers(laterBuyer.cookie) });
+  assert.equal(visible.json()[0].boughtBy.name, 'Compradora');
+  assert.ok(visible.json()[0].boughtAt);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/purchases/mine', headers: headers(buyer.cookie) })).json()[0].id, gift.id);
+
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/purchases/${gift.id}`, headers: headers(buyer.cookie) })).statusCode, 200);
+  const reverted = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: headers(laterBuyer.cookie) });
+  assert.equal(reverted.json()[0].boughtAt, null);
+  assert.equal(reverted.json()[0].reservedBy, null);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/claim`, headers: headers(laterBuyer.cookie), payload: {} })).statusCode, 201);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: headers(laterBuyer.cookie), payload: {} })).statusCode, 201);
+
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/items/${gift.id}`, headers: headers(owner.cookie) })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: headers(owner.cookie) })).json().length, 0);
+  const retained = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: headers(buyer.cookie) });
+  assert.equal(retained.json()[0].ownerDeleted, true);
+  assert.equal(retained.json()[0].deletedByOwnerName, 'Dueña');
+  assert.equal(retained.json()[0].boughtBy.name, 'Otra compradora');
+  assert.equal((await app.inject({ method: 'GET', url: '/api/purchases/mine', headers: headers(laterBuyer.cookie) })).json()[0].id, gift.id);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/purchases/${gift.id}`, headers: headers(laterBuyer.cookie) })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: headers(buyer.cookie) })).json().length, 0);
+});
+
+test('purchase tombstones survive buyer profile deletion and bulk wishlist deletion', async () => {
+  const admin = await profile('Admin tombstones');
+  const owner = await profile('Propietario tombstones');
+  const buyer = await profile('Comprador tombstones');
+  const gift = await item(owner.cookie, 'Regalo conservado');
+  await app.inject({ method: 'POST', url: `/api/items/${gift.id}/claim`, headers: { cookie: buyer.cookie }, payload: {} });
+  await app.inject({ method: 'POST', url: `/api/items/${gift.id}/purchase`, headers: { cookie: buyer.cookie }, payload: {} });
+  const removed = await app.inject({ method: 'POST', url: '/api/items/mine/delete-selected', headers: { cookie: owner.cookie }, payload: { itemIds: [gift.id] } });
+  assert.equal(removed.statusCode, 200, removed.body);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: buyer.cookie } })).json()[0].ownerDeleted, true);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/admin/profiles/${buyer.id}`, headers: { cookie: admin.cookie } })).statusCode, 200);
+  const visibleAfterBuyerDeletion = await app.inject({ method: 'GET', url: `/api/profiles/${owner.id}/items`, headers: { cookie: admin.cookie } });
+  assert.equal(visibleAfterBuyerDeletion.json()[0].boughtBy.name, 'Comprador tombstones');
+  assert.equal(visibleAfterBuyerDeletion.json()[0].reservedBy, null);
+});
+
+test('gifts require a useful name supplied directly or derived from a descriptive URL', async () => {
+  const author = await profile('Nombres obligatorios');
+  const create = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/api/items', headers: { cookie: author.cookie }, payload });
+  const missing = await create({ url: 'https://shop.example/products/123456789', imagePath: '/images/gift.jpg' });
+  assert.equal(missing.statusCode, 400);
+  assert.match(missing.json().error, /nombre/i);
+  const derived = await create({ url: 'https://shop.example/products/pretty-lamp.html' });
+  assert.equal(derived.statusCode, 201, derived.body);
+  assert.equal(derived.json().title, 'pretty lamp');
+  const manual = await create({ title: 'Taza amarilla' });
+  assert.equal(manual.statusCode, 201, manual.body);
+  assert.equal(manual.json().title, 'Taza amarilla');
+});
+
+test('gift ideas are private, editable by their author, and survive recipient deletion by name', async () => {
+  const admin = await profile('Admin ideas');
+  const author = await profile('Autora');
+  const recipient = await profile('Destinataria');
+  const outsider = await profile('Ajena', undefined, false);
+  const headers = (cookie: string) => ({ cookie });
+  const create = await app.inject({ method: 'POST', url: `/api/profiles/${recipient.id}/ideas`, headers: headers(author.cookie), payload: {
+    title: 'Cámara instantánea', url: 'https://shop.example/camera', imagePath: '/images/camera.webp', price: '79.95', notes: 'Color verde', labels: ['cumpleaños', 'foto'],
+  } });
+  assert.equal(create.statusCode, 201, create.body);
+  const idea = create.json();
+  assert.deepEqual(idea.labels.map((label: any) => label.name), ['cumpleaños', 'foto']);
+  assert.equal(idea.imagePath, '/images/camera.webp');
+  assert.equal(idea.recipientName, 'Destinataria');
+
+  assert.equal((await app.inject({ method: 'GET', url: '/api/ideas/mine', headers: headers(author.cookie) })).json()[0].id, idea.id);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${recipient.id}/ideas`, headers: headers(author.cookie) })).json()[0].id, idea.id);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/ideas/mine', headers: headers(recipient.cookie) })).json().length, 0);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/ideas/mine', headers: headers(admin.cookie) })).json().length, 0);
+  assert.equal((await app.inject({ method: 'GET', url: `/api/profiles/${recipient.id}/ideas`, headers: headers(outsider.cookie) })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'PUT', url: `/api/ideas/${idea.id}`, headers: headers(recipient.cookie), payload: { title: 'Robada' } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/ideas/${idea.id}`, headers: headers(admin.cookie) })).statusCode, 404);
+  const updated = await app.inject({ method: 'PUT', url: `/api/ideas/${idea.id}`, headers: headers(author.cookie), payload: { title: 'Cámara verde', labels: ['foto'] } });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.equal(updated.json().title, 'Cámara verde');
+  assert.deepEqual(updated.json().labels.map((label: any) => label.name), ['foto']);
+
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/admin/profiles/${recipient.id}`, headers: headers(admin.cookie) })).statusCode, 200);
+  const retained = await app.inject({ method: 'GET', url: '/api/ideas/mine', headers: headers(author.cookie) });
+  assert.equal(retained.json()[0].recipientProfileId, null);
+  assert.equal(retained.json()[0].recipientName, 'Destinataria');
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/ideas/${idea.id}`, headers: headers(author.cookie) })).statusCode, 200);
+  const second = await app.inject({ method: 'POST', url: `/api/profiles/${admin.id}/ideas`, headers: headers(author.cookie), payload: { title: 'Para Admin' } });
+  assert.equal(second.statusCode, 201);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/admin/profiles/${author.id}`, headers: headers(admin.cookie) })).statusCode, 200);
+  assert.equal((db.prepare('SELECT count(*) AS count FROM gift_ideas WHERE owner_profile_id = ?').get(author.id) as { count: number }).count, 0);
+});
+
+test('categories are suggested globally in lowercase without case-only duplicates', async () => {
   alice = await profile('Etiquetas A');
   bob = await profile('Etiquetas B');
   const first = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: alice.cookie }, payload: { title: 'Libro', category: 'Lectura' } });
   assert.equal(first.statusCode, 201);
+  assert.equal(first.json().category, 'lectura');
+  const sameLabel = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: bob.cookie }, payload: { title: 'Libreta', category: 'LECTURA' } });
+  assert.equal(sameLabel.statusCode, 201);
+  assert.equal(sameLabel.json().category, 'lectura');
   const saved = await app.inject({ method: 'POST', url: '/api/items', headers: { cookie: bob.cookie }, payload: { title: 'Maleta', category: 'Viaje' } });
   assert.equal(saved.statusCode, 201);
-  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/categories', headers: { cookie: bob.cookie } })).json(), ['Lectura', 'Viaje']);
-  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].category, 'Viaje');
+  assert.deepEqual((await app.inject({ method: 'GET', url: '/api/categories', headers: { cookie: bob.cookie } })).json(), ['lectura', 'viaje']);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/items/mine', headers: { cookie: bob.cookie } })).json()[0].category, 'viaje');
 });
 
 test('owner wishlist stays identical after a claim; visitors see the buyer and can remove their claim', async () => {
