@@ -11,7 +11,6 @@ services:
     environment:
       NODE_ENV: production
       DATA_DIR: /data
-      WEB_DIR: /frontend
       PORT: "3000"
       LOG_LEVEL: info
       LOG_FORMAT: pretty
@@ -21,4 +20,3 @@ services:
       # IFRAMELY_API_KEY: replace-with-your-key
     volumes:
       - /mnt/YOUR_POOL/apps/giftapp:/data
-      - /mnt/YOUR_POOL/apps/giftapp-frontend:/frontend

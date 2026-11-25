@@ -9,9 +9,6 @@ services:
       - IFRAMELY_API_KEY=${IFRAMELY_API_KEY:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-pretty}
-      - WEB_DIR=/frontend
     volumes:
       # En TrueNAS: cambia por la ruta de tu dataset, p. ej. /mnt/tank/apps/regalos
       - ./data:/data
-      # The image seeds this directory on first start; later frontend builds replace its contents.
-      - ./frontend:/frontend

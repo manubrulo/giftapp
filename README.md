@@ -19,9 +19,9 @@ The API listens on port `3000`. `DATA_DIR` selects where SQLite and downloaded p
 
 The local [`docker-compose.yml`](docker-compose.yml) builds from the current source directory, so it is for running from a checkout. TrueNAS Apps' YAML installer needs a container image it can pull. Build and push the image to a registry first, then use [`truenas-compose.yml`](truenas-compose.yml).
 
-### Update the frontend without rebuilding the app image
+### Frontend deployment
 
-The server serves static frontend files from a mounted directory. On first start, if that directory has no `index.html`, the container copies the frontend bundled in its image into it. This makes a fresh deployment self-contained and seeds the persistent host directory. For frontend-only updates, build locally with `pnpm build` and copy the contents of `dist/web` into the mounted directory; the server reads files on each request, so no container restart is needed. Replace assets first and `index.html` last. Keep the backend API compatible with the frontend version; API or database changes still require an app image update. The mounted directory must be writable by the container user (`568:568` on TrueNAS).
+The server always serves the frontend bundled in the container image. Deploying a new image updates the frontend and backend together; there is no separate frontend volume to maintain. For local development, run `pnpm dev:web` and open `http://localhost:5173`.
 
 1. Build and publish a Linux image to a container registry you control. For GitHub Container Registry, from this project directory run (replace the username and choose a version tag):
 
